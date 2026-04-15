@@ -1,25 +1,26 @@
-# News sources, intentionally spread across geopolitical stances.
-# `bias_tag` is a free-form label used downstream by the cross-reference prompt
-# so the LLM knows which narrative camp each article comes from.
+# News sources — intentionally spread across sharply opposed geopolitical stances.
+# `bias_tag` is a free-form label the cross-reference prompt uses to attribute
+# narratives to camps. `lang` is ISO code; the pipeline handles zh + en in one run.
 #
-# Add / remove freely. If an RSS URL dies, swap it; the pipeline is tolerant.
+# Notes on RSS availability:
+#   - Many Chinese outlets don't publish stable official RSS. We proxy through
+#     RSSHub (https://docs.rsshub.app). If the public instance rate-limits you,
+#     self-host: `docker run -p 1200:1200 diygod/rsshub` and swap the host below.
+#   - If any feed dies, the pipeline logs and moves on; swap the URL here.
 
 sources:
+  # ── Western mainstream ────────────────────────────────────────────────
   - name: "Reuters World"
     bias_tag: "western-wire"
     lang: "en"
-    rss: "https://www.reutersagency.com/feed/?best-topics=political-general&post_type=best"
-
-  - name: "AP Top News"
-    bias_tag: "western-wire"
-    lang: "en"
-    rss: "https://rsshub.app/apnews/topics/apf-topnews"
+    rss: "https://feeds.reuters.com/Reuters/worldNews"
 
   - name: "BBC World"
     bias_tag: "western-uk"
     lang: "en"
     rss: "http://feeds.bbci.co.uk/news/world/rss.xml"
 
+  # ── Middle-East / Russia counter-narrative ───────────────────────────
   - name: "Al Jazeera English"
     bias_tag: "middle-east"
     lang: "en"
@@ -30,7 +31,24 @@ sources:
     lang: "en"
     rss: "https://www.rt.com/rss/news/"
 
-  - name: "Xinhua English"
+  # ── Chinese state / nationalist ──────────────────────────────────────
+  - name: "新华网 国际"
     bias_tag: "china-state"
-    lang: "en"
-    rss: "http://www.xinhuanet.com/english/rss/worldrss.xml"
+    lang: "zh"
+    rss: "https://rsshub.app/xinhuanet/world"
+
+  - name: "观察者网 头条"
+    bias_tag: "china-nationalist"
+    lang: "zh"
+    rss: "https://rsshub.app/guancha/headline"
+
+  # ── Overseas / neutral-ish Chinese ───────────────────────────────────
+  - name: "联合早报 中国"
+    bias_tag: "overseas-chinese"
+    lang: "zh"
+    rss: "https://rsshub.app/zaobao/realtime/china"
+
+  - name: "联合早报 国际"
+    bias_tag: "overseas-chinese"
+    lang: "zh"
+    rss: "https://rsshub.app/zaobao/realtime/world"
