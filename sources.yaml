@@ -1,0 +1,36 @@
+# News sources, intentionally spread across geopolitical stances.
+# `bias_tag` is a free-form label used downstream by the cross-reference prompt
+# so the LLM knows which narrative camp each article comes from.
+#
+# Add / remove freely. If an RSS URL dies, swap it; the pipeline is tolerant.
+
+sources:
+  - name: "Reuters World"
+    bias_tag: "western-wire"
+    lang: "en"
+    rss: "https://www.reutersagency.com/feed/?best-topics=political-general&post_type=best"
+
+  - name: "AP Top News"
+    bias_tag: "western-wire"
+    lang: "en"
+    rss: "https://rsshub.app/apnews/topics/apf-topnews"
+
+  - name: "BBC World"
+    bias_tag: "western-uk"
+    lang: "en"
+    rss: "http://feeds.bbci.co.uk/news/world/rss.xml"
+
+  - name: "Al Jazeera English"
+    bias_tag: "middle-east"
+    lang: "en"
+    rss: "https://www.aljazeera.com/xml/rss/all.xml"
+
+  - name: "RT World News"
+    bias_tag: "russia-state"
+    lang: "en"
+    rss: "https://www.rt.com/rss/news/"
+
+  - name: "Xinhua English"
+    bias_tag: "china-state"
+    lang: "en"
+    rss: "http://www.xinhuanet.com/english/rss/worldrss.xml"

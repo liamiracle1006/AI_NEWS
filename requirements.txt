@@ -1,0 +1,16 @@
+# Core
+feedparser>=6.0.11
+requests>=2.32.0
+trafilatura>=1.12.0
+pyyaml>=6.0.2
+pydantic>=2.9.0
+python-dotenv>=1.0.1
+
+# LLM SDKs (install only the one you use; all listed for convenience)
+anthropic>=0.40.0
+openai>=1.50.0
+google-genai>=0.3.0
+
+# Phase 3+ (optional, commented to keep MVP lean)
+# streamlit>=1.40.0
+# jinja2>=3.1.0
