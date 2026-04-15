@@ -37,4 +37,38 @@ class ArticleFacts(BaseModel):
     article_url: str
     source_name: str
     bias_tag: str
+    title: str
     facts: ExtractedFact
+
+
+class Divergence(BaseModel):
+    """One point on which narratives diverge across bias camps."""
+    point: str = Field(description="What the camps disagree on (a short phrase)")
+    camp_claims: dict[str, str] = Field(
+        default_factory=dict,
+        description="bias_tag -> that camp's framing/claim on this point",
+    )
+    observation: Optional[str] = Field(
+        None, description="Analyst's one-line note on the pattern"
+    )
+
+
+class SourceRef(BaseModel):
+    source_name: str
+    bias_tag: str
+    url: str
+    title: str
+
+
+class CrossReferenceResult(BaseModel):
+    """Output of Prompt #2: consensus + divergences across bias camps."""
+    topic: str
+    generated_at: datetime
+    sources_covered: List[SourceRef] = Field(default_factory=list)
+    consensus_facts: List[str] = Field(default_factory=list)
+    divergences: List[Divergence] = Field(default_factory=list)
+    suspicious_gaps: List[str] = Field(
+        default_factory=list,
+        description="Facts asserted by only one camp that others would have"
+                    " reason to mention if true.",
+    )

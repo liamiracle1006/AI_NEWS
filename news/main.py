@@ -1,9 +1,13 @@
-"""Phase 1 CLI entry point.
+"""CLI entry point.
 
 Usage:
-    python -m news.main fetch                 # just fetch + print headlines
-    python -m news.main test-extract          # fetch + run FACT_EXTRACTION on first article
-    python -m news.main test-extract -n 3     # run on first N articles
+    # Phase 1 sanity checks:
+    python -m news.main fetch                       # fetch + print index
+    python -m news.main test-extract -n 2           # run FACT_EXTRACTION on N articles
+
+    # Phase 2 full pipeline:
+    python -m news.main analyze "加沙|Gaza"          # fetch + filter + cross-reference
+    python -m news.main analyze "乌克兰|Ukraine|Kyiv" --max 8
 """
 from __future__ import annotations
 
@@ -11,6 +15,7 @@ import argparse
 import json
 import logging
 import sys
+from pathlib import Path
 from typing import List
 
 from .config import load_config
@@ -18,6 +23,8 @@ from .ingest import fetch_all
 from .llm import get_provider
 from .llm.prompts import build_fact_extraction_prompt
 from .models import Article
+from .output import render_markdown, write_brief
+from .pipeline import analyze_topic
 
 
 def _setup_logging(verbose: bool):
@@ -71,6 +78,36 @@ def cmd_test_extract(args) -> int:
     return 0
 
 
+def cmd_analyze(args) -> int:
+    cfg = load_config()
+    facts_bundle, cross = analyze_topic(
+        cfg,
+        keyword_expr=args.keyword,
+        max_articles=args.max,
+        min_hits=args.min_hits,
+    )
+    if not cross:
+        print(
+            f"No analysable articles found for keyword {args.keyword!r}. "
+            "Try different synonyms (pipe-separated), a wider window "
+            "(FETCH_WINDOW_HOURS in .env), or more sources.",
+            file=sys.stderr,
+        )
+        return 1
+
+    md = render_markdown(args.keyword, facts_bundle, cross)
+    out_dir = Path(args.out_dir)
+    path = write_brief(out_dir, args.keyword, md)
+    print(f"\n✅ Brief saved: {path}")
+    print(f"   Articles analysed: {len(facts_bundle)}")
+    print(f"   Consensus facts:   {len(cross.consensus_facts)}")
+    print(f"   Divergences:       {len(cross.divergences)}")
+    if args.print:
+        print("\n" + "=" * 60 + "\n")
+        print(md)
+    return 0
+
+
 def _print_index(articles: List[Article]) -> None:
     print(f"\nFetched {len(articles)} articles:\n")
     for a in articles:
@@ -99,6 +136,20 @@ def main(argv: list[str] | None = None) -> int:
     p_ex = sub.add_parser("test-extract", help="Run fact-extraction prompt on first N articles")
     p_ex.add_argument("-n", type=int, default=1, help="How many articles to process")
     p_ex.set_defaults(func=cmd_test_extract)
+
+    p_an = sub.add_parser(
+        "analyze",
+        help="Full pipeline: fetch + filter by keyword + cross-reference + Markdown brief",
+    )
+    p_an.add_argument(
+        "keyword",
+        help="Keyword expression; use '|' for synonyms, e.g. \"加沙|Gaza|gaza\"",
+    )
+    p_an.add_argument("--max", type=int, default=10, help="Max articles to analyse (cost cap)")
+    p_an.add_argument("--min-hits", type=int, default=3, help="Level-1 minimum before falling back to body match")
+    p_an.add_argument("--out-dir", default="briefs", help="Directory to write Markdown briefs into")
+    p_an.add_argument("--print", action="store_true", help="Also print the brief to stdout")
+    p_an.set_defaults(func=cmd_analyze)
 
     args = parser.parse_args(argv)
     _setup_logging(args.verbose)

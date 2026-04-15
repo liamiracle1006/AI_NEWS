@@ -12,9 +12,9 @@ strips emotion/framing with an LLM, and surfaces the **consensus facts** vs. the
 
 | Phase | Scope | Status |
 |---|---|---|
-| 1 | RSS ingestion + LLM provider abstraction + single-article fact extraction | done (this branch) |
-| 2 | Event clustering + cross-reference prompt chain (consensus / divergence) | planned |
-| 3 | Entity tracking (NER), daily Markdown brief, optional Streamlit UI | planned |
+| 1 | RSS ingestion + LLM provider abstraction + single-article fact extraction | done |
+| 2 | Keyword-driven clustering + cross-reference chain + Markdown brief | done |
+| 3 | Entity tracking (NER), optional Streamlit UI | planned |
 | 4 | SQLite history, power-figure timelines, relationship graph | optional |
 
 ## Quick start (Phase 1)
@@ -36,6 +36,30 @@ python -m news.main test-extract
 # 3) Same, but run on the first 3 articles:
 python -m news.main test-extract -n 3
 ```
+
+## Phase 2: cross-reference a topic
+
+```bash
+# Pipe-separated synonyms bridge bilingual sources in a single run:
+python -m news.main analyze "加沙|Gaza|gaza"
+python -m news.main analyze "乌克兰|Ukraine|Kyiv|Kiev" --max 8
+python -m news.main analyze "美国大选|US election|Trump|Harris" --print
+```
+
+This runs the full chain:
+
+1. **Fetch** from every source in `sources.yaml` (past `FETCH_WINDOW_HOURS` hours).
+2. **Filter** articles mentioning any of the supplied synonyms
+   (title/summary first; falls back to full-body match if < `--min-hits`).
+3. **Extract facts** per article (emotion-stripped JSON).
+4. **Cross-reference** all facts in one LLM call, producing:
+    - `consensus_facts` — claims every camp agrees on
+    - `divergences` — points where bias_tags diverge, with per-camp framing
+    - `suspicious_gaps` — facts only one camp mentions
+5. **Render** a Markdown briefing into `briefs/<topic>_<timestamp>.md`.
+
+Use `|` to bridge languages (e.g. `"加沙|Gaza"`) — the filter matches case-insensitive
+substrings so both zh and en articles get caught in one pass.
 
 ## Project layout
 
