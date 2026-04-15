@@ -38,4 +38,7 @@ def get_provider(cfg: AppConfig) -> LLMProvider:
     if name == "gemini":
         from .gemini_provider import GeminiProvider
         return GeminiProvider(cfg)
+    if name == "deepseek":
+        from .deepseek_provider import DeepSeekProvider
+        return DeepSeekProvider(cfg)
     raise ValueError(f"Unknown LLM_PROVIDER={name!r}")

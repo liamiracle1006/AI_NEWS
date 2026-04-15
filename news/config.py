@@ -30,6 +30,8 @@ class AppConfig:
     openai_model: str
     gemini_api_key: str | None
     gemini_model: str
+    deepseek_api_key: str | None
+    deepseek_model: str
     fetch_window_hours: int
     max_per_source: int
     sources: List[SourceConfig]
@@ -51,6 +53,8 @@ def load_config() -> AppConfig:
         openai_model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
         gemini_api_key=os.getenv("GEMINI_API_KEY") or None,
         gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.0-flash"),
+        deepseek_api_key=os.getenv("DEEPSEEK_API_KEY") or None,
+        deepseek_model=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
         fetch_window_hours=int(os.getenv("FETCH_WINDOW_HOURS", "24")),
         max_per_source=int(os.getenv("MAX_PER_SOURCE", "10")),
         sources=load_sources(),
