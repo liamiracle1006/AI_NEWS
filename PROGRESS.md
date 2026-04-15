@@ -177,17 +177,293 @@ python -m news.main analyze "美国大选|Trump|Harris" --print
 
 ---
 
-## 下一步计划（Phase 3 · 待启动）
+## Phase 3 · 人物追踪（NER + 实体归一化）· 设计
 
-**目标**：在现有交叉比对结果上叠加"人物追踪层"。
+> **状态**：设计冻结，等用户有可执行环境后写代码。  
+> **依赖**：Phase 1 / Phase 2 的 fact extraction 已稳定跑通。
 
-**规划**
-- 在事实提取时增加 NER 子字段：`people: [{name, position, action, status_change}]`
-- 新增 `ENTITY_TRACKING` prompt：汇总一次 `analyze` 内出现的所有政治人物
-- 报告新增"## 👤 人物状态速览"板块
-- （可选）`streamlit run app.py` 做最简 UI
+### 目标
+在 `analyze` 产出的每篇简报里，加一个"本话题涉及的政治人物 + 他们在这一轮报道里的动作/状态变化"清单。长期（Phase 4）这些条目会被归档，形成人物权力变动时间线。
 
-**触发条件**：Phase 2 实际跑通、用户验收报告质量后启动。
+### 设计决策
+
+**Q1：NER 嵌入 FACT_EXTRACTION 还是独立 prompt？**  
+→ **独立 prompt（`ENTITY_TRACKING`）**，单独一次调用在交叉比对之后跑。
+- 理由：事实提取 prompt 已经够长，再加人物字段会让模型分心，导致两边都做不好。
+- 理由：独立可开关。`analyze ... --no-people` 跳过省钱。
+- 代价：每次 `analyze` 多一次 LLM 调用（约 +¥0.02）。
+
+**Q2：实体归一化怎么做？**  
+→ **让同一个 prompt 一次性做合并**：把所有篇文章里的人物一次性喂给模型，要求它输出"已合并的规范化人物清单"。
+- MVP 阶段不引入向量/fuzzy match；模型自己能判断"习近平"="中国国家主席"="Xi Jinping"。
+- 输出 schema 里 `aliases: [string]` 保留所有原始称呼，供用户自己核对。
+
+**Q3：跨篇文章的立场归因怎么给？**  
+→ 每个人物事件里带 `per_source_framing: { bias_tag: "该阵营怎么写这个人的" }`，明确谁在说什么。
+
+### 数据模型（追加到 `news/models.py`）
+
+```python
+class EntityEvent(BaseModel):
+    canonical_name: str              # 规范化姓名（中文优先）
+    aliases: List[str]               # 原文里出现过的所有称呼
+    position: Optional[str]          # 报道中最明确的头衔，如"伊朗总统"
+    action_or_status: str            # 此事件中此人做了/遭遇了什么
+    status_change: Optional[str]     # 若属职务变动/状态转折（辞职/被捕/失踪/任命）
+    per_source_framing: Dict[str, str]  # bias_tag -> 该阵营的描述
+    sources: List[str]               # 提到此人的 article_url 列表
+
+class EntityTrackingResult(BaseModel):
+    topic: str
+    generated_at: datetime
+    entities: List[EntityEvent]
+```
+
+### 新增 Prompt（`news/llm/prompts.py`）
+
+```
+ENTITY_TRACKING_SYSTEM
+─────────────────────
+You are a political-entity tracker. Given fact extractions from multiple
+articles about a topic, produce a deduplicated list of named political
+figures (heads of state, ministers, generals, spokespersons, opposition
+leaders) who appear with meaningful agency.
+
+RULES:
+1. MERGE aliases. "习近平" / "中国国家主席" / "Xi Jinping" -> one entity
+   with canonical_name="习近平", aliases=["Xi Jinping","中国国家主席",...].
+2. Keep ONLY politically meaningful actions: 任命/辞职/被捕/失踪/
+   出访/表态/签署/会晤/军事命令 等. Ignore background mentions.
+3. For each entity, per_source_framing: if different camps describe
+   the same person's action differently, surface it (e.g. western-wire:
+   "condemned the strike" vs russia-state: "responded to provocation").
+4. Output Simplified Chinese. Strict JSON per user schema. No prose.
+```
+
+### Pipeline 改动（`news/pipeline.py`）
+
+```python
+def analyze_topic(cfg, keyword, *, max_articles=10, track_people=True):
+    ...
+    cross = cross_reference(provider, keyword, facts_bundle)
+    entities = None
+    if track_people and facts_bundle:
+        entities = track_entities(provider, keyword, facts_bundle)
+    return facts_bundle, cross, entities
+```
+
+### Markdown 输出新板块（`news/output.py`）
+
+```
+## 👤 人物状态速览
+
+### 习近平（中国国家主席）
+别名：Xi Jinping · 中国国家主席 · 习主席  
+**动作**：与伊朗外长通话，重申中方立场  
+**状态变化**：—  
+**阵营差异**：
+- 西方通讯社：称此举为"外交斡旋姿态"
+- 中国官方：定性为"积极推动政治解决"
+
+### <下一位>
+...
+```
+
+### CLI 改动
+
+```bash
+python -m news.main analyze "加沙|Gaza"              # 默认带人物追踪
+python -m news.main analyze "加沙|Gaza" --no-people  # 跳过，省钱
+```
+
+### 已预判的坑
+
+1. **DeepSeek 对"政治敏感人物"可能做内容审查**，返回空列表或泛化描述。对策：Prompt 明确"事实性提及，不做评价"；真出问题切换到 Anthropic/OpenAI。
+2. **合并过度**：模型可能把"普京"和"梅德韦杰夫"合并（都与克里姆林宫相关）。对策：Prompt 明确要求"name 字段必须是确定的自然人，不合并不同人"。
+3. **小人物噪声**：地方官员、发言人、记者被拉进来。对策：Prompt 明确"仅限部长级及以上 / 事件主角"。
+
+### 可选：Phase 3.5 · Streamlit UI
+
+**决策**：**暂不做**。理由：
+- 本地读 Markdown 已经足够，编辑器渲染效果比简陋 Streamlit 好。
+- Streamlit 会引入 50MB+ 依赖，与"轻量 MVP"定位不符。
+- 真要可视化，Phase 4 的关系图用 `pyvis` 直接生成 HTML 即可。
+
+如果后期用户坚持要 Streamlit，十分钟能加一个最简 `app.py` 读取 `briefs/*.md` 列表 + 渲染。不是阻塞项。
+
+---
+
+## Phase 4 · 历史归档 + 人物时间线 + 关系图谱 · 设计
+
+> **状态**：设计冻结。Phase 4 是"可选的长线价值"：单次 `analyze` 不靠它也能读。  
+> **依赖**：Phase 3 实体归一化稳定。
+
+### 目标
+
+把每天 `analyze` 的产出持久化，让用户能问出这三种问题：
+
+1. **"过去 30 天，加沙话题下的叙事分歧点是怎么演变的？"** → 话题时间线
+2. **"过去 3 个月，某人物的职务/状态变化轨迹是什么？"** → 人物时间线
+3. **"这些人物之间谁和谁一起出现过？"** → 关系图
+
+### 技术选型（故意保守）
+
+| 能力 | 选型 | 理由 |
+|---|---|---|
+| 本地存储 | **SQLite**（`sqlite3` 标准库） | 零依赖，单文件可备份 |
+| ORM | **不用**，手写 SQL | 数据模型简单，ORM 是负担 |
+| 关系图渲染 | **`networkx` + `pyvis`** | 一个 HTML 文件本地打开，无前端工程 |
+| 向量/语义搜索 | **不做** | MVP 边界外 |
+
+**新增依赖**：只加 `networkx` 和 `pyvis`（都是纯 Python，装起来不麻烦）。
+
+### 数据库 Schema（`news/db.py`）
+
+```sql
+-- 每篇文章归档一次；article_hash = sha1(url) 用作幂等键
+CREATE TABLE articles (
+    article_hash  TEXT PRIMARY KEY,
+    source_name   TEXT NOT NULL,
+    bias_tag      TEXT NOT NULL,
+    lang          TEXT,
+    title         TEXT NOT NULL,
+    url           TEXT NOT NULL,
+    published_at  TEXT,
+    fetched_at    TEXT NOT NULL,
+    body_snippet  TEXT    -- 前 2000 字，便于搜索
+);
+
+-- 每次 analyze 跑一次就一条
+CREATE TABLE analyses (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    topic         TEXT NOT NULL,
+    keyword_expr  TEXT NOT NULL,
+    generated_at  TEXT NOT NULL,
+    brief_path    TEXT,     -- 生成的 Markdown 文件路径
+    cross_ref_json TEXT     -- CrossReferenceResult 的原始 JSON（完整存）
+);
+
+-- 事件 ↔ 文章：多对多
+CREATE TABLE analysis_articles (
+    analysis_id   INTEGER REFERENCES analyses(id),
+    article_hash  TEXT REFERENCES articles(article_hash),
+    PRIMARY KEY (analysis_id, article_hash)
+);
+
+-- 人物规范表；canonical_name 作为自然主键的人类可读版本
+CREATE TABLE entities (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    canonical_name  TEXT UNIQUE NOT NULL,
+    latest_position TEXT,
+    aliases_json    TEXT,      -- JSON 数组，追加合并
+    first_seen_at   TEXT,
+    last_seen_at    TEXT
+);
+
+-- 人物 ↔ 事件：每次 analyze 发现的动作/状态
+CREATE TABLE entity_events (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_id       INTEGER REFERENCES entities(id),
+    analysis_id     INTEGER REFERENCES analyses(id),
+    topic           TEXT NOT NULL,
+    action_or_status TEXT,
+    status_change   TEXT,
+    per_source_framing_json TEXT,
+    seen_at         TEXT NOT NULL
+);
+
+CREATE INDEX idx_events_entity_time ON entity_events(entity_id, seen_at);
+CREATE INDEX idx_articles_published ON articles(published_at);
+```
+
+### 模块划分
+
+| 新文件 | 职责 |
+|---|---|
+| `news/db.py` | SQLite 连接池、schema 初始化（`init_db()`）、所有 upsert/query 语句 |
+| `news/archive.py` | 把 `analyze_topic()` 的返回值写进 DB（幂等：同 url 不重复存） |
+| `news/timeline.py` | `timeline_for_person()` / `timeline_for_topic()` 查询 + Markdown 渲染 |
+| `news/graph.py` | 用 `networkx` 构图（节点=人物，边=共同出现事件），`pyvis` 输出 HTML |
+| 修改：`news/main.py` | 新增 `archive` / `timeline` / `graph` 三个子命令 |
+
+### 实体归一化升级（增量更新）
+
+每次新 `analyze` 的实体清单进库时：
+
+```python
+for e in new_entities:
+    existing = find_entity_by_alias(e.canonical_name, e.aliases)
+    if existing:
+        merge_aliases(existing.id, e.aliases)   # 追加不覆盖
+        update_latest_position(existing.id, e.position)
+    else:
+        insert_entity(e)
+```
+
+匹配策略：先按 `canonical_name` 精确匹配；找不到再按别名集合的交集是否非空。**不引入模糊匹配**，宁可漏合并（用户能手动改 DB）也不错合并。
+
+### 新增 CLI
+
+```bash
+# 跑完 analyze 后自动归档（或手动）
+python -m news.main analyze "加沙" --archive
+python -m news.main archive                  # 把历史 briefs/ 全部回灌入库
+
+# 查询
+python -m news.main timeline --person "普京" --days 90
+python -m news.main timeline --topic "加沙" --days 30
+
+# 关系图（输出 HTML，浏览器打开）
+python -m news.main graph --topic "加沙" --days 30 --out graph.html
+python -m news.main graph --person "普京" --depth 2
+```
+
+### Markdown 时间线输出示例
+
+```
+# 人物时间线：普京（过去 90 天）
+
+## 2026-04-12
+- **动作**：签署新一轮动员令
+- 来源阵营：russia-state / western-wire
+- 阵营分歧：俄方定性为"周期性征兵"，西方定性为"战争升级"
+
+## 2026-03-28
+- **状态变化**：解除国防部长绍伊古职务
+...
+```
+
+### 关系图输出
+
+- 节点大小 = 出现次数
+- 节点颜色 = 主要关联的 `bias_tag`
+- 边粗细 = 共同出现的话题数
+- Hover 显示最近一次的 `action_or_status`
+
+### 已预判的坑
+
+1. **人物合并错误不可逆**：一旦把两个不同人合并，后续所有事件都挂到错人身上。对策：提供 `news/main.py entities split <id> --keep <alias>` 命令来分裂。
+2. **SQLite 在长期使用后可能膨胀**：正文摘要字段吃空间。对策：`body_snippet` 截断到 2000 字符，历史超过 180 天的自动归档到冷存储（不做，用户手动清理）。
+3. **关系图节点过多不可读**：一个活跃话题 30 天可能有 50+ 人物。对策：默认只显示 top-N（按事件数排序），`--limit N` 控制。
+
+### 不做清单（明确边界）
+
+- ❌ Web 后端 / REST API（个人使用不需要）
+- ❌ 实时抓取（cron 跑 `analyze` 就够）
+- ❌ 多用户 / 权限
+- ❌ 向量检索（除非 Phase 4 实际跑下来明显不够用）
+- ❌ Telegram / Twitter 接入（独立 Phase 5 或永远不做）
+
+---
+
+## 触发 Phase 3/4 代码化的条件
+
+1. 用户切到能装 pip 包的机器
+2. 跑 `python -m news.main analyze "加沙|Gaza"` 产出一份 Markdown
+3. 把 Markdown 贴给我
+4. 我根据真实输出微调 Phase 1/2 的 Prompt
+5. **然后**按上面的设计开写 Phase 3 代码
+6. Phase 3 跑稳后再启 Phase 4
 
 ---
 
