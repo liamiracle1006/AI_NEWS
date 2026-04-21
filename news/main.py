@@ -80,11 +80,12 @@ def cmd_test_extract(args) -> int:
 
 def cmd_analyze(args) -> int:
     cfg = load_config()
-    facts_bundle, cross = analyze_topic(
+    facts_bundle, cross, entities = analyze_topic(
         cfg,
         keyword_expr=args.keyword,
         max_articles=args.max,
         min_hits=args.min_hits,
+        track_people=not args.no_people,
     )
     if not cross:
         print(
@@ -95,13 +96,15 @@ def cmd_analyze(args) -> int:
         )
         return 1
 
-    md = render_markdown(args.keyword, facts_bundle, cross)
+    md = render_markdown(args.keyword, facts_bundle, cross, entities)
     out_dir = Path(args.out_dir)
     path = write_brief(out_dir, args.keyword, md)
     print(f"\n✅ Brief saved: {path}")
     print(f"   Articles analysed: {len(facts_bundle)}")
     print(f"   Consensus facts:   {len(cross.consensus_facts)}")
     print(f"   Divergences:       {len(cross.divergences)}")
+    if entities:
+        print(f"   People tracked:    {len(entities.entities)}")
     if args.print:
         print("\n" + "=" * 60 + "\n")
         print(md)
@@ -149,6 +152,7 @@ def main(argv: list[str] | None = None) -> int:
     p_an.add_argument("--min-hits", type=int, default=3, help="Level-1 minimum before falling back to body match")
     p_an.add_argument("--out-dir", default="briefs", help="Directory to write Markdown briefs into")
     p_an.add_argument("--print", action="store_true", help="Also print the brief to stdout")
+    p_an.add_argument("--no-people", action="store_true", help="Skip entity tracking (saves one LLM call)")
     p_an.set_defaults(func=cmd_analyze)
 
     args = parser.parse_args(argv)

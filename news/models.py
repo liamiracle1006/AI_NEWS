@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -24,11 +24,16 @@ class ExtractedFact(BaseModel):
     when: Optional[str] = Field(None, description="Time as stated in article")
     where: Optional[str] = None
     who: List[str] = Field(default_factory=list)
-    action: Optional[str] = Field(None, description="What actually happened")
+    action: Optional[str] = Field(None, description="What actually happened (2-3 sentences allowed)")
     numbers: List[str] = Field(default_factory=list, description="Figures, casualties, quantities")
+    context: Optional[str] = Field(None, description="Background / why this is happening (one sentence)")
+    key_quotes: List[str] = Field(
+        default_factory=list,
+        description='Most significant direct quotes, format: "[Person]: quote"',
+    )
     source_claims_verbatim: List[str] = Field(
         default_factory=list,
-        description="Claims that look like opinions/attributions, not facts",
+        description="Official statements and attributed claims that cannot be independently verified",
     )
 
 
@@ -38,6 +43,7 @@ class ArticleFacts(BaseModel):
     source_name: str
     bias_tag: str
     title: str
+    published_at: Optional[datetime] = None
     facts: ExtractedFact
 
 
@@ -72,3 +78,21 @@ class CrossReferenceResult(BaseModel):
         description="Facts asserted by only one camp that others would have"
                     " reason to mention if true.",
     )
+
+
+class EntityEvent(BaseModel):
+    """One political figure and their actions/status in a given analysis round."""
+    canonical_name: str
+    aliases: List[str] = Field(default_factory=list)
+    position: Optional[str] = None
+    action_or_status: str
+    status_change: Optional[str] = None
+    per_source_framing: Dict[str, str] = Field(default_factory=dict)
+    sources: List[str] = Field(default_factory=list)
+
+
+class EntityTrackingResult(BaseModel):
+    """Output of Prompt #3: deduplicated political figures and their framing."""
+    topic: str
+    generated_at: datetime
+    entities: List[EntityEvent] = Field(default_factory=list)

@@ -7,9 +7,9 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
-from .models import ArticleFacts, CrossReferenceResult
+from .models import ArticleFacts, CrossReferenceResult, EntityTrackingResult
 
 # Short Chinese labels for each bias_tag we ship in sources.yaml.
 # Unknown tags fall back to the tag itself — harmless.
@@ -32,6 +32,7 @@ def render_markdown(
     topic: str,
     facts_bundle: List[ArticleFacts],
     cross: CrossReferenceResult,
+    entities: Optional[EntityTrackingResult] = None,
 ) -> str:
     camps = sorted({f.bias_tag for f in facts_bundle})
     when_str = cross.generated_at.strftime("%Y-%m-%d %H:%M UTC")
@@ -85,6 +86,26 @@ def render_markdown(
             lines.append(f"- {g}")
         lines.append("")
 
+    # ── 人物状态速览 ─────────────────────────────────────────────
+    if entities and entities.entities:
+        lines.append("## 👤 人物状态速览")
+        lines.append("")
+        for e in entities.entities:
+            alias_str = " · ".join(e.aliases) if e.aliases else ""
+            header = e.canonical_name
+            if e.position:
+                header += f"（{e.position}）"
+            lines.append(f"### {header}")
+            if alias_str:
+                lines.append(f"别名：{alias_str}  ")
+            lines.append(f"**动作**：{e.action_or_status}  ")
+            lines.append(f"**状态变化**：{e.status_change or '—'}  ")
+            if e.per_source_framing:
+                lines.append("**阵营差异**：")
+                for tag, framing in e.per_source_framing.items():
+                    lines.append(f"- {_label(tag)}：{framing}")
+            lines.append("")
+
     # ── 原文链接 ────────────────────────────────────────────────
     lines.append("## 🔗 原文链接")
     lines.append("")
@@ -105,10 +126,16 @@ def render_markdown(
         lines.append(f"- 地点：{fx.where or '—'}")
         lines.append(f"- 人物：{'、'.join(fx.who) if fx.who else '—'}")
         lines.append(f"- 动作：{fx.action or '—'}")
+        if fx.context:
+            lines.append(f"- 背景：{fx.context}")
         if fx.numbers:
             lines.append(f"- 数据：{'；'.join(fx.numbers)}")
+        if fx.key_quotes:
+            lines.append("- 关键引言：")
+            for q in fx.key_quotes:
+                lines.append(f"  - {q}")
         if fx.source_claims_verbatim:
-            lines.append("- 引述/未证实说法：")
+            lines.append("- 官方表态/引述：")
             for claim in fx.source_claims_verbatim:
                 lines.append(f"  - {claim}")
         lines.append("")

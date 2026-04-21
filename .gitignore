@@ -9,3 +9,11 @@ dist/
 build/
 *.egg-info/
 output/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.env.local
+
+# Generated briefs (runtime output)
+briefs/
