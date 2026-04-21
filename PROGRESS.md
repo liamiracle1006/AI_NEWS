@@ -177,9 +177,48 @@ python -m news.main analyze "美国大选|Trump|Harris" --print
 
 ---
 
-## Phase 3 · 人物追踪（NER + 实体归一化）· 设计
+## Phase 2.5 · Prompt 增强 · 2026-04-21
 
-> **状态**：设计冻结，等用户有可执行环境后写代码。  
+**目标**
+让单篇事实提取和交叉比对的输出质量更高，从"机械字段"升级为有分析深度的报告。
+
+**改动**
+| 文件 | 改动内容 |
+|---|---|
+| `news/models.py` | `ExtractedFact` 增加 `context: Optional[str]`（事件背景）和 `key_quotes: List[str]`（关键引言，格式 `"[人物]: 原话"`）；`ArticleFacts` 增加 `published_at: Optional[datetime]` |
+| `news/llm/prompts.py` | `FACT_EXTRACTION_SYSTEM`：`action` 允许 2-3 句捕捉完整经过，新增 `context`/`key_quotes` 字段要求 |
+| `news/llm/prompts.py` | `CROSS_REFERENCE_SYSTEM` 重写：共识事实末尾标注来源阵营及日期（`来源：西方通讯社 [2026-04-20]`）；`camp_claims` 要求自然散文而非列表；`observation` 必须解释**为什么**有分歧；少于 2 个阵营的不算分歧 |
+| `news/llm/prompts.py` | `build_cross_reference_prompt()`：文章块中带入 `date=YYYY-MM-DD` 字段 |
+
+**关键决策**
+- 时效性问题：`published_at` 跟随文章进入交叉比对 prompt，让模型能在共识和分歧中标注具体日期，解决"叙事没有时间锚点"的问题。
+- 机械语言问题：`observation` 强制要求有分析，解释叙事差异的**原因**（框架选择/利益驱动/信息差）。
+
+**Commit**：包含在 `ae47851`
+
+---
+
+## Phase 2.6 · 关键词自动同义词扩展 · 2026-04-21
+
+**目标**
+用户输入"加沙"，系统自动扩展为`加沙|Gaza|Gaza Strip|哈马斯|Hamas`，提升多语言来源的命中率。
+
+**改动**
+| 文件 | 改动内容 |
+|---|---|
+| `news/llm/prompts.py` | 新增 `SYNONYM_EXPANSION_SYSTEM` + `build_synonym_expansion_prompt()`，轻量 LLM 调用，JSON 输出 `{"synonyms": [...]}` |
+| `news/pipeline.py` | 新增 `expand_keyword(cfg, keyword) -> str`，把同义词列表以 `|` 合并后返回 |
+| `api/routes.py` | `POST /api/analyze`：在创建 job 前先调用 `expand_keyword()`，返回 `expanded_keyword` 字段 |
+| `frontend/src/api.ts` | `startAnalyze()` 返回 `{jobId, expandedKeyword}` |
+| `frontend/src/App.tsx` | 显示"搜索关键词已扩展为：`...`"的提示 pill |
+
+**Commit**：包含在 `ae47851`
+
+---
+
+## Phase 3 · 人物追踪（NER + 实体归一化）· 2026-04-21
+
+> **状态**：已实现。  
 > **依赖**：Phase 1 / Phase 2 的 fact extraction 已稳定跑通。
 
 ### 目标
@@ -282,14 +321,110 @@ python -m news.main analyze "加沙|Gaza" --no-people  # 跳过，省钱
 2. **合并过度**：模型可能把"普京"和"梅德韦杰夫"合并（都与克里姆林宫相关）。对策：Prompt 明确要求"name 字段必须是确定的自然人，不合并不同人"。
 3. **小人物噪声**：地方官员、发言人、记者被拉进来。对策：Prompt 明确"仅限部长级及以上 / 事件主角"。
 
-### 可选：Phase 3.5 · Streamlit UI
+### 实现细节
 
-**决策**：**暂不做**。理由：
-- 本地读 Markdown 已经足够，编辑器渲染效果比简陋 Streamlit 好。
-- Streamlit 会引入 50MB+ 依赖，与"轻量 MVP"定位不符。
-- 真要可视化，Phase 4 的关系图用 `pyvis` 直接生成 HTML 即可。
+**改动文件**
+| 文件 | 改动 |
+|---|---|
+| `news/models.py` | 新增 `EntityEvent` 和 `EntityTrackingResult` Pydantic 模型 |
+| `news/llm/prompts.py` | 新增 `ENTITY_TRACKING_SYSTEM` + `build_entity_tracking_prompt()` |
+| `news/pipeline.py` | 新增 `track_entities(provider, keyword, facts_bundle) -> EntityTrackingResult` |
+| `news/output.py` | `render_markdown()` 增加"👤 人物状态速览"板块 |
+| `news/main.py` | 新增 `--no-people` flag；`analyze_topic()` 返回 3-tuple `(facts_bundle, cross, entities)` |
 
-如果后期用户坚持要 Streamlit，十分钟能加一个最简 `app.py` 读取 `briefs/*.md` 列表 + 渲染。不是阻塞项。
+**并行提取优化**
+- 把原来顺序提取改为 `ThreadPoolExecutor(max_workers=5)` 并行，速度提升约 4-5×
+- 新增 `on_progress` 回调，每完成一篇通知前端进度
+
+**Commit**：`ae47851`
+
+---
+
+## Phase 3.5 · FastAPI 后端 · 2026-04-21
+
+**目标**
+把命令行 pipeline 包成 HTTP API，支持异步分析 + SSE 实时进度推送。
+
+**新增文件结构**
+```
+api/
+├── __init__.py
+├── main.py      # FastAPI app，CORS，路由挂载
+└── routes.py    # 所有路由 + 后台 worker
+```
+
+**API 设计**
+
+| 端点 | 说明 |
+|---|---|
+| `POST /api/analyze` | 触发分析，立即返回 `{job_id, expanded_keyword}` |
+| `GET /api/analyze/{id}/stream` | SSE 流，推送 `{step, message}` 进度事件 |
+| `GET /api/analyze/{id}/result` | 分析完成后返回完整结构化 JSON |
+| `GET /api/briefs` | 列出 `briefs/` 历史简报，含 `article_count`、`has_data` 字段 |
+| `GET /api/briefs/{id}` | 返回 Markdown 原文 |
+| `GET /api/briefs/{id}/data` | 返回同名 `.json` 结构化结果（供历史面板加载） |
+
+**关键技术决策**
+- Job 存在内存字典 `{job_id: {...}}`（MVP；Phase 4 SQLite 接手）
+- SSE 用 `asyncio.Queue` 桥接阻塞的 pipeline 线程和异步 HTTP 流
+- 后台 worker 用 `loop.run_in_executor()` 运行同步 pipeline，避免阻塞事件循环
+- 每次分析完成后自动将结果保存为 `briefs/<topic>_<timestamp>.json`，支持历史回放
+
+**已知修复**
+- Python 3.14 已废弃 `asyncio.get_event_loop()`，改用 `asyncio.get_running_loop()`
+- 前端需在 SSE 收到 `step=error` 时立即停止，不再调用 `/result`（否则返回 500）
+
+**Commit**：`ae47851`
+
+---
+
+## Phase 3.6 · React 前端 · 2026-04-21
+
+**目标**
+用 React + TypeScript 构建完整 Web UI，展示分析结果、实时进度、历史记录。
+
+**技术栈**
+- Vite + React 18 + TypeScript
+- TailwindCSS v4（`@tailwindcss/vite` 插件）
+- EventSource API（浏览器原生，无额外依赖）
+
+**组件结构**
+```
+frontend/src/
+├── App.tsx                    # 主状态管理、SSE 订阅、历史加载
+├── api.ts                     # fetch 封装 + EventSource 订阅
+├── types.ts                   # TypeScript 接口 + 阵营颜色/标签工具
+└── components/
+    ├── AnalyzeForm.tsx         # 关键词输入、参数、提交
+    ├── ProgressBar.tsx         # SSE 实时进度（含文章数进度解析）
+    ├── ResultView.tsx          # 结果总容器
+    ├── ConsensusSection.tsx    # 🤝 共识事实
+    ├── DivergenceCard.tsx      # ⚔️ 叙事分歧（可展开/折叠）
+    ├── EntityCard.tsx          # 👤 人物卡片（阵营差异展示）
+    ├── GapSection.tsx          # 🕳️ 可疑缺口
+    ├── SourceList.tsx          # 🔗 原文链接（按阵营分色）
+    ├── CampBadge.tsx           # 阵营标签徽章
+    └── HistoryPanel.tsx        # 历史记录滑入面板
+```
+
+**阵营颜色编码**
+| 阵营 | 颜色 |
+|---|---|
+| western-wire（西方通讯社）| 蓝 |
+| western-uk（英国视角）| 天蓝 |
+| middle-east（中东视角）| 绿 |
+| russia-state（俄方官方）| 橙 |
+| china-state（中国官方）| 红 |
+| china-nationalist（中国民族主义）| 玫红 |
+| overseas-chinese（海外中文）| 紫 |
+
+**历史面板（HistoryPanel）**
+- 点击"📋 历史记录"从右侧滑入面板
+- 列出所有历史分析，显示话题、时间、文章数
+- 无对应 JSON 的历史（仅 Markdown）显示"仅 Markdown"标识并禁用加载
+- 点击条目调用 `/api/briefs/{id}/data` 加载结构化结果，直接渲染到主界面
+
+**Commit**：`ae47851`
 
 ---
 
@@ -456,14 +591,11 @@ python -m news.main graph --person "普京" --depth 2
 
 ---
 
-## 触发 Phase 3/4 代码化的条件
+## 触发 Phase 4 代码化的条件
 
-1. 用户切到能装 pip 包的机器
-2. 跑 `python -m news.main analyze "加沙|Gaza"` 产出一份 Markdown
-3. 把 Markdown 贴给我
-4. 我根据真实输出微调 Phase 1/2 的 Prompt
-5. **然后**按上面的设计开写 Phase 3 代码
-6. Phase 3 跑稳后再启 Phase 4
+1. Phase 3（人物追踪）在实际话题上跑稳，输出质量满意
+2. 用户有持久化历史的需求（当前 `.json` 文件方案已够用于 MVP）
+3. 启动 SQLite 归档 + 时间线查询 + 关系图
 
 ---
 
