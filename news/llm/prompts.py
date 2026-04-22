@@ -90,7 +90,7 @@ Camp name mapping (use these Chinese labels in output):
   us-liberal=美国主流      us-conservative=美国保守
   middle-east=中东视角
   russia-state=俄方官方    china-state=中国官方  china-nationalist=中国民族主义
-  overseas-chinese=海外中文
+  overseas-chinese=海外中文  china-hk=香港视角
 
 1. CONSENSUS FACTS
    Facts that 2+ articles in this batch report consistently.

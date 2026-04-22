@@ -61,6 +61,17 @@ sources:
     lang: "en"
     rss: "https://www.presstv.ir/rss.xml"
 
+  # ── Hong Kong / Chinese-adjacent perspective ─────────────────────────
+  - name: "South China Morning Post"
+    bias_tag: "china-hk"
+    lang: "en"
+    rss: "https://www.scmp.com/rss/91/feed"
+
+  - name: "SCMP China"
+    bias_tag: "china-hk"
+    lang: "en"
+    rss: "https://www.scmp.com/rss/4/feed"
+
   # ── Chinese state / English international outlets ─────────────────────
   - name: "CGTN World"
     bias_tag: "china-state"

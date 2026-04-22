@@ -95,6 +95,7 @@ export const CAMP_COLORS: Record<string, string> = {
   'china-state': 'bg-red-100 text-red-800 border-red-200',
   'china-nationalist': 'bg-rose-100 text-rose-800 border-rose-200',
   'overseas-chinese': 'bg-purple-100 text-purple-800 border-purple-200',
+  'china-hk': 'bg-teal-100 text-teal-800 border-teal-200',
 }
 
 export const CAMP_LABELS: Record<string, string> = {
@@ -107,6 +108,7 @@ export const CAMP_LABELS: Record<string, string> = {
   'china-state': '中国官方',
   'china-nationalist': '中国民族主义',
   'overseas-chinese': '海外中文',
+  'china-hk': '香港视角',
 }
 
 export function campLabel(tag: string): string {
