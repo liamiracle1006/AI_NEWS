@@ -354,10 +354,11 @@ async def refresh_cache(background_tasks: BackgroundTasks):
 
     def _do_refresh():
         global _heat_cache, _heat_ts
+        print("[cache] refresh started — fetching all RSS sources...")
         cfg = load_config()
         articles = fetch_and_cache(cfg)
-        # Invalidate heat cache so next /map/heat rebuilds from fresh data
         _heat_ts = 0.0
+        print(f"[cache] refresh complete — {len(articles)} articles saved")
         return len(articles)
 
     background_tasks.add_task(_do_refresh)

@@ -31,22 +31,18 @@ async def _startup_cache():
 
     status = cache_status()
     if status["has_today"]:
-        log.info(
-            "Article cache already exists for today (%d articles, %.0f min old)",
-            status["article_count"],
-            status["age_minutes"],
-        )
+        print(f"[cache] today's cache exists: {status['article_count']} articles, {status['age_minutes']:.0f} min old")
         return
 
-    log.info("No cache for today — fetching RSS in background...")
+    print("[cache] no cache for today — fetching RSS in background...")
 
     async def _build():
         loop = asyncio.get_running_loop()
         try:
             cfg = await loop.run_in_executor(None, load_config)
             articles = await loop.run_in_executor(None, lambda: fetch_and_cache(cfg))
-            log.info("Startup cache complete: %d articles", len(articles))
+            print(f"[cache] startup cache complete: {len(articles)} articles")
         except Exception as exc:  # noqa: BLE001
-            log.warning("Startup cache failed: %s", exc)
+            print(f"[cache] startup cache failed: {exc}")
 
     asyncio.create_task(_build())
