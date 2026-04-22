@@ -86,7 +86,9 @@ bias_tag and publication date. Your job is NOT to decide absolute truth.
 Your job is to reveal the shape of the narrative space.
 
 Camp name mapping (use these Chinese labels in output):
-  western-wire=西方通讯社  western-uk=英国视角  middle-east=中东视角
+  western-wire=西方通讯社  western-uk=英国视角
+  us-liberal=美国主流      us-conservative=美国保守
+  middle-east=中东视角
   russia-state=俄方官方    china-state=中国官方  china-nationalist=中国民族主义
   overseas-chinese=海外中文
 

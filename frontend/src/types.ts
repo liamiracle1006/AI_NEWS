@@ -88,6 +88,8 @@ export interface MapArticle {
 export const CAMP_COLORS: Record<string, string> = {
   'western-wire': 'bg-blue-100 text-blue-800 border-blue-200',
   'western-uk': 'bg-sky-100 text-sky-800 border-sky-200',
+  'us-liberal': 'bg-indigo-100 text-indigo-800 border-indigo-200',
+  'us-conservative': 'bg-amber-100 text-amber-800 border-amber-200',
   'middle-east': 'bg-green-100 text-green-800 border-green-200',
   'russia-state': 'bg-orange-100 text-orange-800 border-orange-200',
   'china-state': 'bg-red-100 text-red-800 border-red-200',
@@ -98,6 +100,8 @@ export const CAMP_COLORS: Record<string, string> = {
 export const CAMP_LABELS: Record<string, string> = {
   'western-wire': '西方通讯社',
   'western-uk': '英国视角',
+  'us-liberal': '美国主流',
+  'us-conservative': '美国保守',
   'middle-east': '中东视角',
   'russia-state': '俄方官方',
   'china-state': '中国官方',

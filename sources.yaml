@@ -2,12 +2,13 @@
 # `bias_tag` is a free-form label the cross-reference prompt uses to attribute
 # narratives to camps.
 #
-# Working RSS sources as of 2026-04-22:
-#   - RT, TASS, Sputnik: geo-blocked (connection refused); removed until proxy solution
-#   - rsshub.app: unreliable public instance; replaced with direct feeds
+# Last verified: 2026-04-22
+#   - RT/TASS: 000 from western IPs; likely accessible from China directly
+#   - Sputnik CN (sputniknews.cn): 200 — hosted in China, accessible without VPN
+#   - WaPo RSS: dead (000)
 
 sources:
-  # ── Western mainstream ────────────────────────────────────────────────
+  # ── UK / European mainstream ──────────────────────────────────────────
   - name: "BBC World"
     bias_tag: "western-uk"
     lang: "en"
@@ -18,15 +19,32 @@ sources:
     lang: "en"
     rss: "https://www.theguardian.com/world/rss"
 
-  - name: "NPR World"
-    bias_tag: "western-wire"
-    lang: "en"
-    rss: "https://feeds.npr.org/1004/rss.xml"
-
   - name: "DW World"
     bias_tag: "western-wire"
     lang: "en"
     rss: "https://rss.dw.com/rdf/rss-en-world"
+
+  # ── US mainstream (liberal-leaning) ──────────────────────────────────
+  - name: "NPR World"
+    bias_tag: "us-liberal"
+    lang: "en"
+    rss: "https://feeds.npr.org/1004/rss.xml"
+
+  - name: "New York Times World"
+    bias_tag: "us-liberal"
+    lang: "en"
+    rss: "https://rss.nytimes.com/services/xml/rss/nyt/World.xml"
+
+  - name: "CNN World"
+    bias_tag: "us-liberal"
+    lang: "en"
+    rss: "http://rss.cnn.com/rss/edition_world.rss"
+
+  # ── US conservative ───────────────────────────────────────────────────
+  - name: "Fox News World"
+    bias_tag: "us-conservative"
+    lang: "en"
+    rss: "https://moxie.foxnews.com/google-publisher/world.xml"
 
   # ── Middle-East / alternative narrative ──────────────────────────────
   - name: "Al Jazeera English"
@@ -44,7 +62,9 @@ sources:
     lang: "en"
     rss: "https://www.presstv.ir/rss.xml"
 
-  # ── Russian state (accessible from CN; may timeout via Western VPN) ──
+  # ── Russian state ──────────────────────────────────────────────────────
+  # RT/TASS blocked from western IPs but accessible from China without VPN.
+  # sputniknews.cn is CN-hosted, works regardless.
   - name: "RT English"
     bias_tag: "russia-state"
     lang: "en"
@@ -55,7 +75,12 @@ sources:
     lang: "en"
     rss: "https://tass.com/rss/v2.xml"
 
-  # ── Chinese state / English international outlets (direct RSS) ────────
+  - name: "Sputnik 中文"
+    bias_tag: "russia-state"
+    lang: "zh"
+    rss: "https://sputniknews.cn/export/rss2/world/index.xml"
+
+  # ── Chinese state / English international outlets ─────────────────────
   - name: "CGTN World"
     bias_tag: "china-state"
     lang: "en"
