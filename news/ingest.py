@@ -33,9 +33,9 @@ def _entry_time(entry) -> datetime | None:
     return None
 
 
-def _extract_body(url: str, timeout: int = 15) -> str | None:
+def _extract_body(url: str) -> str | None:
     try:
-        downloaded = trafilatura.fetch_url(url, timeout=timeout)
+        downloaded = trafilatura.fetch_url(url)
         if not downloaded:
             return None
         return trafilatura.extract(
