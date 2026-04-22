@@ -7,20 +7,24 @@ import {
 
 const GEO_URL = '/world-110m.json'
 
-// Countries that should be treated as part of another country
-// (political sensitivity + TopoJSON has them as separate polygons)
+// These polygons share color + click target with another country.
+// Taiwan → China: same color, clicking opens China panel labeled "中国台湾".
 const REDIRECT: Record<string, string> = {
   'Taiwan': 'China',
   'Taiwan, Province of China': 'China',
   'Republic of China': 'China',
   'N. Cyprus': 'Cyprus',
   'Northern Cyprus': 'Cyprus',
-  // Singapore too small for 110m; redirect to Malaysia so it at least gets a clickable area
+  // Singapore too small for 110m; routes to Malaysia
   'Singapore': 'Malaysia',
 }
 
-// Chinese display names for countries shown in the panel header
+// Chinese display names — raw polygon names checked first so Taiwan → 中国台湾
+// before falling back to the redirected name (China → 中国).
 const ZH_NAMES: Record<string, string> = {
+  'Taiwan': '中国台湾',
+  'Taiwan, Province of China': '中国台湾',
+  'Republic of China': '中国台湾',
   'United States of America': '美国',
   China: '中国',
   Russia: '俄罗斯',
@@ -118,7 +122,7 @@ interface Props {
 }
 
 export function WorldMap({ heatData, onCountryClick, loading }: Props) {
-  const [tooltip, setTooltip] = useState<{ name: string; count: number; x: number; y: number } | null>(null)
+  const [tooltip, setTooltip] = useState<{ zh: string; count: number; x: number; y: number } | null>(null)
 
   const max = useMemo(() => Math.max(0, ...Object.values(heatData)), [heatData])
 
@@ -139,16 +143,17 @@ export function WorldMap({ heatData, onCountryClick, loading }: Props) {
         )}
       </div>
 
-      <div className="relative" style={{ height: 420 }}>
+      <div className="relative" style={{ height: 540 }}>
         <ComposableMap
-          projectionConfig={{ scale: 160, center: [10, 5] }}
+          projectionConfig={{ scale: 175, center: [10, 5] }}
           style={{ width: '100%', height: '100%' }}
         >
           <Geographies geography={GEO_URL}>
             {({ geographies }) =>
               geographies.map((geo) => {
                 const rawName: string = geo.properties.name ?? ''
-                const name = REDIRECT[rawName] ?? rawName
+                const name = REDIRECT[rawName] ?? rawName  // used for heat color + article fetch
+                const zh = ZH_NAMES[rawName] ?? ZH_NAMES[name] ?? name  // raw checked first
                 const count = heatData[name] ?? 0
                 const fill = heatColor(count, max)
 
@@ -165,10 +170,10 @@ export function WorldMap({ heatData, onCountryClick, loading }: Props) {
                       pressed: { outline: 'none' },
                     }}
                     onMouseEnter={(e) => {
-                      setTooltip({ name, count, x: e.clientX, y: e.clientY })
+                      setTooltip({ zh, count, x: e.clientX, y: e.clientY })
                     }}
                     onMouseLeave={() => setTooltip(null)}
-                    onClick={() => onCountryClick(name, ZH_NAMES[name] ?? name)}
+                    onClick={() => onCountryClick(name, zh)}
                   />
                 )
               })
@@ -181,7 +186,7 @@ export function WorldMap({ heatData, onCountryClick, loading }: Props) {
             className="fixed z-50 bg-gray-900 text-white text-xs px-2 py-1 rounded pointer-events-none"
             style={{ left: tooltip.x + 12, top: tooltip.y - 28 }}
           >
-            {ZH_NAMES[tooltip.name] ?? tooltip.name}
+            {tooltip.zh}
             {tooltip.count > 0 && ` · ${tooltip.count} 篇`}
           </div>
         )}

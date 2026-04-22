@@ -599,6 +599,44 @@ python -m news.main graph --person "普京" --depth 2
 
 ---
 
+## Phase 5 · 交互式世界热力图 · 2026-04-22
+
+**目标**
+在首页顶部常驻一张可交互的世界地图，用热力色展示全球新闻热度分布，支持点击国家/地区查看相关文章并触发深度分析。
+
+**新增/修改文件**
+
+| 文件 | 改动 |
+|---|---|
+| `api/geo_keywords.py` | **新增**。~70 个国家/地区的关键词映射表，用于 RSS 文章地理标注（零 LLM，纯字符串匹配）。台湾/西藏/新疆/香港均归入中国关键词 |
+| `api/routes.py` | 新增 `GET /api/map/heat`（10 分钟缓存）、`GET /api/map/articles`（点击后拉取相关文章）、`GET /api/cache/status`、`POST /api/cache/refresh`、`GET /api/cache/sources`（调试） |
+| `frontend/src/components/WorldMap.tsx` | **新增**。`react-simple-maps` SVG 地图，sqrt 着色（灰→青→橙→红），固定尺寸（540px / scale 175），无拖拽/缩放，hover tooltip，点击回调 |
+| `frontend/src/components/RegionPanel.tsx` | **新增**。点击国家后从右侧滑入面板，独立请求该国相关文章（按阵营分色卡片），顶部"深度分析"按钮可触发 LLM 全文分析 |
+| `frontend/src/App.tsx` | 顶部渲染 `<WorldMap>`，页面加载时请求热力数据，每 2 分钟自动轮询更新；`<RegionPanel>` 绑定点击回调 + 深度分析回调 |
+| `frontend/src/api.ts` | 新增 `fetchHeatData()`、`fetchMapArticles(country)` |
+| `frontend/src/types.ts` | 新增 `us-liberal`（美国主流/靛蓝）、`us-conservative`（美国保守/琥珀）、`china-hk`（香港视角/青）阵营颜色标签 |
+| `news/article_cache.py` | **新增**。每日 RSS 元数据快照（`cache/articles_YYYY-MM-DD.json`），`fetch_body=False` 快速建立，`CACHE_WINDOW_HOURS=168`（7 天窗口使低频源也有内容） |
+| `api/main.py` | 启动时检查今日缓存，无则在后台触发刷新 |
+| `sources.yaml` | 移除所有俄罗斯源（RT/TASS/Sputnik 在新加坡全被封锁）；新增 SCMP × 2（`china-hk`，可从新加坡访问的中文视角英文源） |
+| `news/llm/prompts.py` | `CROSS_REFERENCE` 改进：单阵营时不再返回空结果，改为明确列出缺席视角；新增 `us-liberal`/`us-conservative`/`china-hk` 阵营中文映射 |
+
+**关键技术决策**
+
+- **热力数据零 LLM**：`/api/map/heat` 完全靠字符串匹配，整体响应 < 1 秒。
+- **正文懒加载**：缓存只存 RSS 元数据（标题 + 摘要），分析时才对命中的文章并行抓取正文（`ThreadPoolExecutor(max_workers=8)`），缓存建立从 30-50 分钟降至 < 30 秒。
+- **政治敏感性**：台湾多边形通过 `REDIRECT` 共享中国的颜色，`ZH_NAMES` 里对应显示"中国台湾"；新加坡在 110m 分辨率下无独立多边形，热度归入马来西亚（GEO_KEYWORDS 里 Singapore 挂在 Malaysia 下）。
+- **色阶**：sqrt 缩放（低热度国家不再全灰），三段渐变：灰（零）→ 青（少）→ 橙（中）→ 红（热）。
+
+**已知限制**
+
+- 俄罗斯 / 中国官方 RSS 源（RT、TASS、CGTN、Global Times、China Daily）在新加坡均无法抓取，目前用 SCMP 替代中文视角，俄方视角缺失。
+- 110m 地图分辨率下新加坡、卡塔尔等小国无独立多边形。
+- 热力数据基于 RSS 标题/摘要关键词匹配，无语义消歧（"Georgia" 可能同时命中格鲁吉亚和美国佐治亚州）。
+
+**Commits**：`e3e13a4` · `13246ea` · `facb12b` · `a3bfb9c` 及更早数条
+
+---
+
 ## 约定
 
 - **每个 commit 必须更新本文档**。如果改动小到不值得开新节，就追加到最近一节的"后续修补"小节里。

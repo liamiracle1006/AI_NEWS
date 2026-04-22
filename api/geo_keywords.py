@@ -17,7 +17,7 @@ GEO_KEYWORDS: dict[str, list[str]] = {
         "China", "Chinese", "中国", "Beijing", "北京", "Shanghai", "上海",
         "Xi Jinping", "习近平", "PRC", "CCP", "中共",
         # Taiwan → China
-        "Taiwan", "台湾", "Taipei", "台北",
+        "Taiwan", "台湾", "Taipei", "台北", "TSMC", "台积电",
         # Tibet / Xinjiang → China
         "Tibet", "西藏", "Xinjiang", "新疆", "Uyghur", "维吾尔",
         "Hong Kong", "香港",
