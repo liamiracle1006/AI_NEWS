@@ -140,16 +140,20 @@ def cache_status() -> dict:
 MAX_PER_SOURCE_CACHE = 50  # no artificial cap for daily snapshot
 
 
+CACHE_WINDOW_HOURS = 168  # 7 days — captures sources that publish infrequently
+
+
 def fetch_and_cache(cfg: AppConfig) -> List[Article]:
     """Fetch all RSS sources and save to today's cache. Returns the articles.
 
-    Bodies are NOT fetched here (fetch_body=False) to keep startup fast (~30s).
-    The analysis pipeline fetches bodies on-demand for the small set of matched articles.
+    Uses a 7-day window so infrequently-updated sources (Global Times, CGTN, etc.)
+    still contribute articles. Bodies are NOT fetched here to keep startup fast (~30s);
+    the analysis pipeline fetches bodies on-demand for matched articles only.
     """
     log.info("Fetching all RSS sources for daily cache...")
     articles = fetch_all(
         cfg.sources,
-        window_hours=cfg.fetch_window_hours,
+        window_hours=CACHE_WINDOW_HOURS,
         max_per_source=MAX_PER_SOURCE_CACHE,
         fetch_body=False,  # RSS metadata only; bodies fetched on-demand during analysis
     )
