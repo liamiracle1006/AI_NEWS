@@ -2,23 +2,28 @@
 # `bias_tag` is a free-form label the cross-reference prompt uses to attribute
 # narratives to camps. `lang` is ISO code; the pipeline handles zh + en in one run.
 #
-# Notes on RSS availability:
-#   - Many Chinese outlets don't publish stable official RSS. We proxy through
-#     RSSHub (https://docs.rsshub.app). If the public instance rate-limits you,
-#     self-host: `docker run -p 1200:1200 diygod/rsshub` and swap the host below.
-#   - If any feed dies, the pipeline logs and moves on; swap the URL here.
+# Reuters killed their public RSS in 2020; replaced with AP News + Guardian.
+# Chinese outlets proxied through RSSHub (https://docs.rsshub.app).
+# Self-host RSSHub if the public instance rate-limits you:
+#   docker run -p 1200:1200 diygod/rsshub
+# then swap rsshub.app → localhost:1200 in the URLs below.
 
 sources:
   # ── Western mainstream ────────────────────────────────────────────────
-  - name: "Reuters World"
+  - name: "AP News World"
     bias_tag: "western-wire"
     lang: "en"
-    rss: "https://feeds.reuters.com/Reuters/worldNews"
+    rss: "https://feeds.apnews.com/rss/world-news"
 
   - name: "BBC World"
     bias_tag: "western-uk"
     lang: "en"
     rss: "http://feeds.bbci.co.uk/news/world/rss.xml"
+
+  - name: "The Guardian World"
+    bias_tag: "western-uk"
+    lang: "en"
+    rss: "https://www.theguardian.com/world/rss"
 
   # ── Middle-East / Russia counter-narrative ───────────────────────────
   - name: "Al Jazeera English"

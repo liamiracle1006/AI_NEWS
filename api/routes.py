@@ -19,6 +19,7 @@ from news.pipeline import expand_keyword, extract_facts_batch, cross_reference, 
 from news.ingest import fetch_all
 from news.cluster import filter_by_keyword
 from news.output import render_markdown, write_brief
+from news.article_cache import load_or_fetch, fetch_and_cache, cache_status
 from api.geo_keywords import GEO_KEYWORDS
 
 router = APIRouter()
@@ -66,14 +67,17 @@ async def _run_analysis(job_id: str, req: AnalyzeRequest, expanded_keyword: str)
         q.put_nowait({"step": step, "message": message})
 
     try:
-        emit("fetching", "正在抓取 RSS 源...")
         cfg = await loop.run_in_executor(None, load_config)
 
-        articles = await loop.run_in_executor(
-            None,
-            lambda: fetch_all(cfg.sources, window_hours=cfg.fetch_window_hours,
-                              max_per_source=cfg.max_per_source, fetch_body=True),
-        )
+        # Use today's cache if available; otherwise fetch live and save cache
+        status = cache_status()
+        if status["has_today"]:
+            emit("fetching", f"读取今日缓存（{status['article_count']} 篇文章）...")
+        else:
+            emit("fetching", "首次运行：正在抓取 RSS 源并建立今日缓存...")
+
+        articles = await loop.run_in_executor(None, lambda: load_or_fetch(cfg))
+
         hits = filter_by_keyword(articles, expanded_keyword)
         if not hits:
             emit("error", "未找到匹配文章，请尝试其他关键词或扩大时间窗口。")
@@ -273,14 +277,9 @@ async def get_brief_data(brief_id: str):
 # ── Geo heat map ──────────────────────────────────────────────────────────────
 
 def _build_heat() -> dict[str, int]:
-    """Fetch RSS articles and count per-country mentions (no LLM)."""
+    """Count per-country mentions from today's article cache (no LLM, no live fetch)."""
     cfg = load_config()
-    articles = fetch_all(
-        cfg.sources,
-        window_hours=cfg.fetch_window_hours,
-        max_per_source=cfg.max_per_source,
-        fetch_body=False,  # title+summary only — fast
-    )
+    articles = load_or_fetch(cfg)
     counts: dict[str, int] = {}
     for article in articles:
         text = f"{article.title} {article.summary or ''}".lower()
@@ -288,13 +287,13 @@ def _build_heat() -> dict[str, int]:
             for kw in keywords:
                 if kw.lower() in text:
                     counts[country] = counts.get(country, 0) + 1
-                    break  # count each article once per country
+                    break
     return counts
 
 
 @router.get("/map/heat")
 async def get_map_heat():
-    """Return per-country article mention counts from recent RSS feed (cached 10 min)."""
+    """Return per-country article mention counts (10-min in-memory cache on top of daily cache)."""
     global _heat_cache, _heat_ts
     loop = asyncio.get_running_loop()
     now = time.time()
@@ -302,3 +301,28 @@ async def get_map_heat():
         _heat_cache = await loop.run_in_executor(None, _build_heat)
         _heat_ts = now
     return _heat_cache
+
+
+# ── Article cache management ──────────────────────────────────────────────────
+
+@router.get("/cache/status")
+async def get_cache_status():
+    """Return metadata about the daily article cache."""
+    return cache_status()
+
+
+@router.post("/cache/refresh")
+async def refresh_cache(background_tasks: BackgroundTasks):
+    """Force-refresh today's article cache by re-fetching all RSS sources."""
+    global _heat_cache, _heat_ts
+
+    def _do_refresh():
+        global _heat_cache, _heat_ts
+        cfg = load_config()
+        articles = fetch_and_cache(cfg)
+        # Invalidate heat cache so next /map/heat rebuilds from fresh data
+        _heat_ts = 0.0
+        return len(articles)
+
+    background_tasks.add_task(_do_refresh)
+    return {"status": "refresh started"}
