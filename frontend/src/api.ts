@@ -43,6 +43,12 @@ export async function fetchBriefData(id: string): Promise<import('./types').Anal
   return res.json()
 }
 
+export async function fetchHeatData(): Promise<Record<string, number>> {
+  const res = await fetch('/api/map/heat')
+  if (!res.ok) throw new Error('Failed to fetch heat data')
+  return res.json()
+}
+
 export function subscribeToProgress(
   jobId: string,
   onEvent: (e: ProgressEvent) => void,

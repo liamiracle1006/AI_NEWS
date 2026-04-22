@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -18,11 +19,17 @@ from news.pipeline import expand_keyword, extract_facts_batch, cross_reference, 
 from news.ingest import fetch_all
 from news.cluster import filter_by_keyword
 from news.output import render_markdown, write_brief
+from api.geo_keywords import GEO_KEYWORDS
 
 router = APIRouter()
 
 # In-memory job store: {job_id: {"status": ..., "events": Queue, "result": ..., "error": ...}}
 _jobs: dict[str, dict[str, Any]] = {}
+
+# Heat map cache: refreshed at most once every 10 minutes
+_heat_cache: dict[str, int] = {}
+_heat_ts: float = 0.0
+_HEAT_TTL = 600  # seconds
 
 
 # ── Request / Response schemas ────────────────────────────────────────────────
@@ -261,3 +268,37 @@ async def get_brief_data(brief_id: str):
     if not json_path.exists():
         raise HTTPException(status_code=404, detail="No structured data for this brief")
     return json.loads(json_path.read_text(encoding="utf-8"))
+
+
+# ── Geo heat map ──────────────────────────────────────────────────────────────
+
+def _build_heat() -> dict[str, int]:
+    """Fetch RSS articles and count per-country mentions (no LLM)."""
+    cfg = load_config()
+    articles = fetch_all(
+        cfg.sources,
+        window_hours=cfg.fetch_window_hours,
+        max_per_source=cfg.max_per_source,
+        fetch_body=False,  # title+summary only — fast
+    )
+    counts: dict[str, int] = {}
+    for article in articles:
+        text = f"{article.title} {article.summary or ''}".lower()
+        for country, keywords in GEO_KEYWORDS.items():
+            for kw in keywords:
+                if kw.lower() in text:
+                    counts[country] = counts.get(country, 0) + 1
+                    break  # count each article once per country
+    return counts
+
+
+@router.get("/map/heat")
+async def get_map_heat():
+    """Return per-country article mention counts from recent RSS feed (cached 10 min)."""
+    global _heat_cache, _heat_ts
+    loop = asyncio.get_running_loop()
+    now = time.time()
+    if now - _heat_ts > _HEAT_TTL:
+        _heat_cache = await loop.run_in_executor(None, _build_heat)
+        _heat_ts = now
+    return _heat_cache

@@ -1,9 +1,11 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { AnalyzeForm } from './components/AnalyzeForm'
 import { ProgressBar } from './components/ProgressBar'
 import { ResultView } from './components/ResultView'
 import { HistoryPanel } from './components/HistoryPanel'
-import { startAnalyze, fetchResult, subscribeToProgress } from './api'
+import { WorldMap } from './components/WorldMap'
+import { RegionPanel } from './components/RegionPanel'
+import { startAnalyze, fetchResult, subscribeToProgress, fetchHeatData } from './api'
 import type { AnalysisResult, ProgressEvent } from './types'
 
 export default function App() {
@@ -13,6 +15,18 @@ export default function App() {
   const [result, setResult] = useState<AnalysisResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [historyOpen, setHistoryOpen] = useState(false)
+
+  // Map state
+  const [heatData, setHeatData] = useState<Record<string, number>>({})
+  const [heatLoading, setHeatLoading] = useState(true)
+  const [selectedCountry, setSelectedCountry] = useState<{ name: string; zh: string } | null>(null)
+
+  useEffect(() => {
+    fetchHeatData()
+      .then(setHeatData)
+      .catch(() => {})
+      .finally(() => setHeatLoading(false))
+  }, [])
 
   const handleAnalyze = async (keyword: string, maxArticles: number, trackPeople: boolean) => {
     setLoading(true)
@@ -58,6 +72,8 @@ export default function App() {
     setEvents([])
   }
 
+  const articles = result?.facts_bundle ?? []
+
   return (
     <div className="min-h-screen bg-gray-50">
       <header className="bg-white border-b border-gray-200 sticky top-0 z-10">
@@ -78,7 +94,23 @@ export default function App() {
         onLoad={handleHistoryLoad}
       />
 
+      <RegionPanel
+        countryName={selectedCountry?.name ?? ''}
+        countryZh={selectedCountry?.zh ?? ''}
+        articles={articles}
+        heatCount={selectedCountry ? (heatData[selectedCountry.name] ?? 0) : 0}
+        open={selectedCountry !== null}
+        onClose={() => setSelectedCountry(null)}
+      />
+
       <main className="max-w-4xl mx-auto px-4 py-8 space-y-4">
+        {/* World heatmap — always visible */}
+        <WorldMap
+          heatData={heatData}
+          loading={heatLoading}
+          onCountryClick={(name, zh) => setSelectedCountry({ name, zh })}
+        />
+
         <div className="bg-white rounded-xl border border-gray-200 p-6">
           <h1 className="text-xl font-bold text-gray-800 mb-1">新闻叙事分析</h1>
           <p className="text-sm text-gray-500 mb-5">
@@ -87,7 +119,6 @@ export default function App() {
           <AnalyzeForm onSubmit={handleAnalyze} loading={loading} />
         </div>
 
-        {/* Expanded keyword pill */}
         {expandedKeyword && (
           <div className="text-xs text-gray-500 px-1">
             搜索关键词已扩展为：
@@ -97,21 +128,18 @@ export default function App() {
           </div>
         )}
 
-        {/* Progress */}
         {loading && events.length > 0 && (
           <div className="bg-white rounded-xl border border-gray-200 p-6">
             <ProgressBar events={events} />
           </div>
         )}
 
-        {/* Error */}
         {error && !loading && (
           <div className="bg-red-50 border border-red-200 rounded-xl p-4 text-sm text-red-700">
             ❌ {error}
           </div>
         )}
 
-        {/* Result */}
         {result && !loading && <ResultView result={result} />}
       </main>
     </div>
