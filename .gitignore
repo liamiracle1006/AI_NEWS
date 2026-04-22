@@ -17,3 +17,6 @@ frontend/.env.local
 
 # Generated briefs (runtime output)
 briefs/
+
+# Daily article cache (runtime data, can be large)
+cache/
