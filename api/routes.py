@@ -339,9 +339,11 @@ async def get_map_articles(country: str):
         text = f"{a.title} {a.summary or ''}".lower()
         return any(n in text for n in needles)
 
+    from datetime import timezone
+    _MIN_DT = datetime.min.replace(tzinfo=timezone.utc)
+
     hits = [a for a in articles if matches(a)]
-    # Sort newest first
-    hits.sort(key=lambda a: a.published_at or "", reverse=True)
+    hits.sort(key=lambda a: a.published_at or _MIN_DT, reverse=True)
 
     return [
         {
