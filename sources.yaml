@@ -3,12 +3,11 @@
 # narratives to camps.
 #
 # Working RSS sources as of 2026-04-22:
-#   - TASS, Sputnik, RT: geo-blocked; removed until proxy solution available
-#   - RSSHub Chinese sources: public rsshub.app is unreliable; self-host if needed:
-#       docker run -p 1200:1200 diygod/rsshub  → swap rsshub.app → localhost:1200
+#   - RT, TASS, Sputnik: geo-blocked (connection refused); removed until proxy solution
+#   - rsshub.app: unreliable public instance; replaced with direct feeds
 
 sources:
-  # ── Western mainstream (all verified working) ─────────────────────────
+  # ── Western mainstream ────────────────────────────────────────────────
   - name: "BBC World"
     bias_tag: "western-uk"
     lang: "en"
@@ -35,18 +34,28 @@ sources:
     lang: "en"
     rss: "https://www.aljazeera.com/xml/rss/all.xml"
 
-  # ── Chinese state / nationalist (requires working RSSHub) ────────────
-  - name: "新华网 国际"
+  - name: "Mehr News Agency"
+    bias_tag: "middle-east"
+    lang: "en"
+    rss: "https://en.mehrnews.com/rss"
+
+  - name: "PressTV"
+    bias_tag: "middle-east"
+    lang: "en"
+    rss: "https://www.presstv.ir/rss.xml"
+
+  # ── Chinese state / English international outlets (direct RSS) ────────
+  - name: "CGTN World"
     bias_tag: "china-state"
-    lang: "zh"
-    rss: "https://rsshub.app/xinhuanet/world"
+    lang: "en"
+    rss: "https://www.cgtn.com/subscribe/rss/section/world.xml"
 
-  - name: "观察者网 头条"
+  - name: "Global Times"
     bias_tag: "china-nationalist"
-    lang: "zh"
-    rss: "https://rsshub.app/guancha/headline"
+    lang: "en"
+    rss: "https://www.globaltimes.cn/rss/outbrain.xml"
 
-  - name: "联合早报 国际"
-    bias_tag: "overseas-chinese"
-    lang: "zh"
-    rss: "https://rsshub.app/zaobao/realtime/world"
+  - name: "China Daily"
+    bias_tag: "china-state"
+    lang: "en"
+    rss: "http://www.chinadaily.com.cn/rss/world_rss.xml"

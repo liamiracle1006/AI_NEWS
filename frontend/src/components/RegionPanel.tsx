@@ -9,9 +9,10 @@ interface Props {
   heatCount: number
   open: boolean
   onClose: () => void
+  onAnalyze?: (keyword: string) => void
 }
 
-export function RegionPanel({ countryName, countryZh, heatCount, open, onClose }: Props) {
+export function RegionPanel({ countryName, countryZh, heatCount, open, onClose, onAnalyze }: Props) {
   const [articles, setArticles] = useState<MapArticle[]>([])
   const [loading, setLoading] = useState(false)
 
@@ -44,7 +45,17 @@ export function RegionPanel({ countryName, countryZh, heatCount, open, onClose }
               </p>
             )}
           </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
+          <div className="flex items-center gap-2">
+            {onAnalyze && (
+              <button
+                onClick={() => { onClose(); onAnalyze(countryZh || countryName) }}
+                className="text-xs px-2.5 py-1 rounded bg-blue-600 text-white hover:bg-blue-700 transition-colors whitespace-nowrap"
+              >
+                深度分析
+              </button>
+            )}
+            <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
+          </div>
         </div>
 
         {/* Article list */}

@@ -104,6 +104,14 @@ export default function App() {
         heatCount={selectedCountry ? (heatData[selectedCountry.name] ?? 0) : 0}
         open={selectedCountry !== null}
         onClose={() => setSelectedCountry(null)}
+        onAnalyze={(keyword) => {
+          setSelectedCountry(null)
+          handleAnalyze(keyword, 10, true)
+          setTimeout(() => {
+            document.querySelector('main')?.scrollTo({ top: 400, behavior: 'smooth' })
+            window.scrollTo({ top: 400, behavior: 'smooth' })
+          }, 300)
+        }}
       />
 
       <main className="max-w-4xl mx-auto px-4 py-8 space-y-4">
