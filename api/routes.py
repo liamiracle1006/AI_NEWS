@@ -303,6 +303,42 @@ async def get_map_heat():
     return _heat_cache
 
 
+# ── Map: articles by country ─────────────────────────────────────────────────
+
+@router.get("/map/articles")
+async def get_map_articles(country: str):
+    """Return all cached articles related to a country, sorted newest first."""
+    loop = asyncio.get_running_loop()
+    keywords = GEO_KEYWORDS.get(country, [])
+    if not keywords:
+        return []
+
+    cfg = await loop.run_in_executor(None, load_config)
+    articles = await loop.run_in_executor(None, lambda: load_or_fetch(cfg))
+
+    needles = [k.lower() for k in keywords]
+
+    def matches(a) -> bool:
+        text = f"{a.title} {a.summary or ''}".lower()
+        return any(n in text for n in needles)
+
+    hits = [a for a in articles if matches(a)]
+    # Sort newest first
+    hits.sort(key=lambda a: a.published_at or "", reverse=True)
+
+    return [
+        {
+            "title": a.title,
+            "url": a.url,
+            "source_name": a.source_name,
+            "bias_tag": a.bias_tag,
+            "summary": (a.summary or "")[:300],
+            "published_at": a.published_at.isoformat() if a.published_at else None,
+        }
+        for a in hits
+    ]
+
+
 # ── Article cache management ──────────────────────────────────────────────────
 
 @router.get("/cache/status")

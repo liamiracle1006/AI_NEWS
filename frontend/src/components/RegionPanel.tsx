@@ -1,41 +1,36 @@
+import { useEffect, useState } from 'react'
+import { fetchMapArticles } from '../api'
 import { campColor, campLabel } from '../types'
-import type { ArticleFacts } from '../types'
+import type { MapArticle } from '../types'
 
 interface Props {
-  countryName: string       // English name (GEO_KEYWORDS key)
-  countryZh: string         // Chinese display name
-  articles: ArticleFacts[]  // all articles from latest analysis; we filter here
-  heatCount: number         // raw mention count from /api/map/heat
+  countryName: string
+  countryZh: string
+  heatCount: number
   open: boolean
   onClose: () => void
 }
 
-// Keywords used to match articles to a country (simplified subset for filtering)
-// Full matching is done backend-side; here we just filter the already-loaded bundle.
-function articleMatchesCountry(article: ArticleFacts, countryName: string): boolean {
-  const name = countryName.toLowerCase()
-  // Check where field
-  const where = (article.facts.where ?? '').toLowerCase()
-  if (where.includes(name)) return true
-  // Check title
-  if (article.title.toLowerCase().includes(name)) return true
-  // Check action
-  const action = (article.facts.action ?? '').toLowerCase()
-  if (action.includes(name)) return true
-  return false
-}
+export function RegionPanel({ countryName, countryZh, heatCount, open, onClose }: Props) {
+  const [articles, setArticles] = useState<MapArticle[]>([])
+  const [loading, setLoading] = useState(false)
 
-export function RegionPanel({ countryName, countryZh, articles, heatCount, open, onClose }: Props) {
+  useEffect(() => {
+    if (!open || !countryName) return
+    setLoading(true)
+    setArticles([])
+    fetchMapArticles(countryName)
+      .then(setArticles)
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }, [open, countryName])
+
   if (!open) return null
-
-  const related = articles.filter((a) => articleMatchesCountry(a, countryName))
 
   return (
     <>
-      {/* Backdrop */}
       <div className="fixed inset-0 bg-black/30 z-20" onClick={onClose} />
 
-      {/* Slide-in panel */}
       <div className="fixed top-0 right-0 h-full w-96 bg-white shadow-xl z-30 flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200">
@@ -45,58 +40,58 @@ export function RegionPanel({ countryName, countryZh, articles, heatCount, open,
             </h2>
             {heatCount > 0 && (
               <p className="text-xs text-gray-400 mt-0.5">
-                近期 RSS 命中 <span className="font-medium text-gray-600">{heatCount}</span> 篇相关报道
+                今日 RSS 命中 <span className="font-medium text-gray-600">{heatCount}</span> 篇相关报道
               </p>
             )}
           </div>
-          <button
-            onClick={onClose}
-            className="text-gray-400 hover:text-gray-600 text-xl leading-none"
-          >
-            ×
-          </button>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
         </div>
 
         {/* Article list */}
         <div className="flex-1 overflow-y-auto divide-y divide-gray-100">
-          {related.length === 0 ? (
+          {loading && (
+            <p className="text-sm text-gray-400 text-center py-12 animate-pulse">加载中...</p>
+          )}
+
+          {!loading && articles.length === 0 && (
             <div className="px-4 py-12 text-center text-sm text-gray-400">
-              当前分析结果中暂无与该地区直接相关的文章。
+              今日缓存中暂无与该地区相关的报道。
               <br />
-              <span className="text-xs mt-1 block">尝试搜索该地区相关关键词以获取详细报道。</span>
+              <span className="text-xs mt-1 block">缓存每天自动更新，或点击右上角"刷新"重新抓取。</span>
             </div>
-          ) : (
-            related.map((a, i) => (
-              <div key={i} className="px-4 py-3 hover:bg-gray-50 transition-colors">
-                {/* Source badge */}
-                <span
-                  className={`inline-flex items-center text-xs px-1.5 py-0.5 rounded border font-medium mb-1.5 ${campColor(a.bias_tag)}`}
-                >
+          )}
+
+          {!loading && articles.map((a, i) => (
+            <div key={i} className="px-4 py-3 hover:bg-gray-50 transition-colors">
+              <div className="flex items-center gap-2 mb-1.5">
+                <span className={`inline-flex items-center text-xs px-1.5 py-0.5 rounded border font-medium ${campColor(a.bias_tag)}`}>
                   {campLabel(a.bias_tag)}
                 </span>
-
-                {/* Title */}
-                <a
-                  href={a.article_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="block text-sm font-medium text-gray-800 hover:text-blue-600 leading-snug mb-1"
-                >
-                  {a.title}
-                </a>
-
-                {/* Action summary */}
-                {a.facts.action && (
-                  <p className="text-xs text-gray-500 line-clamp-2">{a.facts.action}</p>
+                {a.published_at && (
+                  <span className="text-xs text-gray-400">
+                    {new Date(a.published_at).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                  </span>
                 )}
               </div>
-            ))
-          )}
+
+              <a
+                href={a.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="block text-sm font-medium text-gray-800 hover:text-blue-600 leading-snug mb-1"
+              >
+                {a.title}
+              </a>
+
+              {a.summary && (
+                <p className="text-xs text-gray-500 line-clamp-2">{a.summary}</p>
+              )}
+            </div>
+          ))}
         </div>
 
-        {/* Footer hint */}
         <div className="px-4 py-3 border-t border-gray-100 text-xs text-gray-400">
-          热力数据来自全局 RSS 抓取（每 10 分钟刷新）；文章列表来自当前搜索结果。
+          数据来自今日 RSS 缓存 · 每天自动更新
         </div>
       </div>
     </>

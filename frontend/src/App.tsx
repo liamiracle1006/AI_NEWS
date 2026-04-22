@@ -78,8 +78,6 @@ export default function App() {
     setEvents([])
   }
 
-  const articles = result?.facts_bundle ?? []
-
   return (
     <div className="min-h-screen bg-gray-50">
       <header className="bg-white border-b border-gray-200 sticky top-0 z-10">
@@ -103,7 +101,6 @@ export default function App() {
       <RegionPanel
         countryName={selectedCountry?.name ?? ''}
         countryZh={selectedCountry?.zh ?? ''}
-        articles={articles}
         heatCount={selectedCountry ? (heatData[selectedCountry.name] ?? 0) : 0}
         open={selectedCountry !== null}
         onClose={() => setSelectedCountry(null)}

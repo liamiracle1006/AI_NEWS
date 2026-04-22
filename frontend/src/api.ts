@@ -1,4 +1,4 @@
-import type { AnalysisResult, BriefMeta, ProgressEvent } from './types'
+import type { AnalysisResult, BriefMeta, ProgressEvent, MapArticle } from './types'
 
 export async function startAnalyze(
   keyword: string,
@@ -46,6 +46,12 @@ export async function fetchBriefData(id: string): Promise<import('./types').Anal
 export async function fetchHeatData(): Promise<Record<string, number>> {
   const res = await fetch('/api/map/heat')
   if (!res.ok) throw new Error('Failed to fetch heat data')
+  return res.json()
+}
+
+export async function fetchMapArticles(country: string): Promise<MapArticle[]> {
+  const res = await fetch(`/api/map/articles?country=${encodeURIComponent(country)}`)
+  if (!res.ok) throw new Error('Failed to fetch articles')
   return res.json()
 }
 

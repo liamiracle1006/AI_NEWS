@@ -75,6 +75,15 @@ export interface ProgressEvent {
   message: string
 }
 
+export interface MapArticle {
+  title: string
+  url: string
+  source_name: string
+  bias_tag: string
+  summary: string
+  published_at: string | null
+}
+
 // Camp colors
 export const CAMP_COLORS: Record<string, string> = {
   'western-wire': 'bg-blue-100 text-blue-800 border-blue-200',
