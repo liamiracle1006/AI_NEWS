@@ -63,18 +63,8 @@ sources:
     rss: "https://www.presstv.ir/rss.xml"
 
   # ── Russian state ──────────────────────────────────────────────────────
-  # RT/TASS blocked from western IPs but accessible from China without VPN.
-  # sputniknews.cn is CN-hosted, works regardless.
-  - name: "RT English"
-    bias_tag: "russia-state"
-    lang: "en"
-    rss: "https://www.rt.com/rss/"
-
-  - name: "TASS English"
-    bias_tag: "russia-state"
-    lang: "en"
-    rss: "https://tass.com/rss/v2.xml"
-
+  # RT/TASS: blocked from SG and western IPs (tested 2026-04-22, 000).
+  # sputniknews.cn: CN-hosted mirror, accessible from SG (200).
   - name: "Sputnik 中文"
     bias_tag: "russia-state"
     lang: "zh"
