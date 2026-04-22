@@ -3,7 +3,6 @@ import {
   ComposableMap,
   Geographies,
   Geography,
-  ZoomableGroup,
 } from 'react-simple-maps'
 
 const GEO_URL = '/world-110m.json'
@@ -89,21 +88,21 @@ const ZH_NAMES: Record<string, string> = {
 }
 
 function heatColor(count: number, max: number): string {
-  if (count === 0 || max === 0) return '#d1fae5' // green-100
-  const ratio = Math.min(count / Math.max(max, 1), 1)
-  // green → yellow → red
+  if (count === 0 || max === 0) return '#e2e8f0' // gray-200 for zero
+  // Use sqrt scale so low-count countries still show color
+  const ratio = Math.min(Math.sqrt(count) / Math.sqrt(max), 1)
   if (ratio < 0.5) {
     const t = ratio * 2
-    const r = Math.round(209 + (253 - 209) * t)
-    const g = Math.round(250 + (224 - 250) * t)
-    const b = Math.round(133 + (71 - 133) * t)
-    return `rgb(${r},${g},${b})`
+    const r = Math.round(134 + (251 - 134) * t)
+    const g = Math.round(239 + (191 - 239) * t)
+    const b = Math.round(172 + (36 - 172) * t)
+    return `rgb(${r},${g},${b})`  // teal-300 → amber-400
   } else {
     const t = (ratio - 0.5) * 2
-    const r = Math.round(253 + (239 - 253) * t)
-    const g = Math.round(224 + (68 - 224) * t)
-    const b = Math.round(71 + (68 - 71) * t)
-    return `rgb(${r},${g},${b})`
+    const r = Math.round(251 + (220 - 251) * t)
+    const g = Math.round(191 + (38 - 191) * t)
+    const b = Math.round(36 + (38 - 36) * t)
+    return `rgb(${r},${g},${b})`  // amber-400 → red-600
   }
 }
 
@@ -127,57 +126,49 @@ export function WorldMap({ heatData, onCountryClick, loading }: Props) {
         )}
         {!loading && max > 0 && (
           <div className="flex items-center gap-2 text-xs text-gray-400">
-            <span className="inline-block w-3 h-3 rounded-sm bg-[#d1fae5]" />冷
-            <span className="inline-block w-3 h-3 rounded-sm bg-[#fde047]" />
-            <span className="inline-block w-3 h-3 rounded-sm bg-[#ef4444]" />热
+            <span className="inline-block w-3 h-3 rounded-sm bg-[#e2e8f0]" />无
+            <span className="inline-block w-3 h-3 rounded-sm bg-[#86efac]" />少
+            <span className="inline-block w-3 h-3 rounded-sm bg-[#fbbf24]" />中
+            <span className="inline-block w-3 h-3 rounded-sm bg-[#dc2626]" />热
           </div>
         )}
       </div>
 
-      <div className="relative" style={{ height: 320 }}>
+      <div className="relative" style={{ height: 300 }}>
         <ComposableMap
-          projectionConfig={{ scale: 147, center: [10, 10] }}
+          projectionConfig={{ scale: 145, center: [10, 5] }}
           style={{ width: '100%', height: '100%' }}
         >
-          <ZoomableGroup zoom={1} minZoom={1} maxZoom={4}>
-            <Geographies geography={GEO_URL}>
-              {({ geographies }) =>
-                geographies.map((geo) => {
-                  const rawName: string = geo.properties.name ?? ''
-                  const name = REDIRECT[rawName] ?? rawName
-                  const count = heatData[name] ?? 0
-                  const fill = heatColor(count, max)
+          <Geographies geography={GEO_URL}>
+            {({ geographies }) =>
+              geographies.map((geo) => {
+                const rawName: string = geo.properties.name ?? ''
+                const name = REDIRECT[rawName] ?? rawName
+                const count = heatData[name] ?? 0
+                const fill = heatColor(count, max)
 
-                  return (
-                    <Geography
-                      key={geo.rsmKey}
-                      geography={geo}
-                      fill={fill}
-                      stroke="#ffffff"
-                      strokeWidth={0.5}
-                      style={{
-                        default: { outline: 'none' },
-                        hover: { outline: 'none', opacity: 0.8, cursor: 'pointer' },
-                        pressed: { outline: 'none' },
-                      }}
-                      onMouseEnter={(e) => {
-                        setTooltip({
-                          name,
-                          count,
-                          x: e.clientX,
-                          y: e.clientY,
-                        })
-                      }}
-                      onMouseLeave={() => setTooltip(null)}
-                      onClick={() => {
-                        onCountryClick(name, ZH_NAMES[name] ?? name)
-                      }}
-                    />
-                  )
-                })
-              }
-            </Geographies>
-          </ZoomableGroup>
+                return (
+                  <Geography
+                    key={geo.rsmKey}
+                    geography={geo}
+                    fill={fill}
+                    stroke="#ffffff"
+                    strokeWidth={0.4}
+                    style={{
+                      default: { outline: 'none' },
+                      hover: { outline: 'none', fill: '#f97316', cursor: 'pointer' },
+                      pressed: { outline: 'none' },
+                    }}
+                    onMouseEnter={(e) => {
+                      setTooltip({ name, count, x: e.clientX, y: e.clientY })
+                    }}
+                    onMouseLeave={() => setTooltip(null)}
+                    onClick={() => onCountryClick(name, ZH_NAMES[name] ?? name)}
+                  />
+                )
+              })
+            }
+          </Geographies>
         </ComposableMap>
 
         {tooltip && (
