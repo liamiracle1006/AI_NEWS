@@ -40,7 +40,11 @@ GEO_KEYWORDS: dict[str, list[str]] = {
     "Myanmar": ["Myanmar", "Burma", "缅甸", "Yangon", "仰光"],
     "Thailand": ["Thailand", "Thai", "泰国", "Bangkok", "曼谷"],
     "Indonesia": ["Indonesia", "Indonesian", "印度尼西亚", "Jakarta", "雅加达"],
-    "Malaysia": ["Malaysia", "Malaysian", "马来西亚", "Kuala Lumpur", "吉隆坡"],
+    "Malaysia": [
+        "Malaysia", "Malaysian", "马来西亚", "Kuala Lumpur", "吉隆坡",
+        # Singapore is too small for 110m map; its heat routes to Malaysia
+        "Singapore", "新加坡",
+    ],
 
     # ── South Asia ─────────────────────────────────────────────────────────
     "India": [

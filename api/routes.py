@@ -366,6 +366,17 @@ async def get_cache_status():
     return cache_status()
 
 
+@router.get("/cache/sources")
+async def get_cache_sources():
+    """Show per-source article counts from today's cache."""
+    from news.article_cache import load_today
+    articles = load_today() or []
+    counts: dict[str, int] = {}
+    for a in articles:
+        counts[a.source_name] = counts.get(a.source_name, 0) + 1
+    return {"total": len(articles), "by_source": dict(sorted(counts.items(), key=lambda x: -x[1]))}
+
+
 @router.post("/cache/refresh")
 async def refresh_cache(background_tasks: BackgroundTasks):
     """Force-refresh today's article cache by re-fetching all RSS sources."""

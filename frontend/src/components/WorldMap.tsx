@@ -10,8 +10,13 @@ const GEO_URL = '/world-110m.json'
 // Countries that should be treated as part of another country
 // (political sensitivity + TopoJSON has them as separate polygons)
 const REDIRECT: Record<string, string> = {
-  Taiwan: 'China',
+  'Taiwan': 'China',
+  'Taiwan, Province of China': 'China',
+  'Republic of China': 'China',
   'N. Cyprus': 'Cyprus',
+  'Northern Cyprus': 'Cyprus',
+  // Singapore too small for 110m; redirect to Malaysia so it at least gets a clickable area
+  'Singapore': 'Malaysia',
 }
 
 // Chinese display names for countries shown in the panel header
