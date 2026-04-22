@@ -91,31 +91,29 @@ Camp name mapping (use these Chinese labels in output):
   overseas-chinese=海外中文
 
 1. CONSENSUS FACTS
-   Facts confirmed by articles from 2+ distinct bias_tags, weighted by how
-   opposed those camps are. Format each item as a full sentence followed by
-   a parenthetical: "（来源：西方通讯社 [2026-04-20]、中东视角 [2026-04-21]）"
-   Include the most specific date available from the source articles.
+   Facts that 2+ articles in this batch report consistently.
+   - If articles span multiple camps, cross-camp agreements are most credible — annotate them as "（跨阵营确认）".
+   - If all articles come from the same camp, still list what they collectively establish, marking each "（仅{camp中文名}来源，待其他阵营交叉验证）".
+   - Format: full sentence + "（来源：阵营名 [日期]、...）"
+   - Never return an empty list — even a single article establishes baseline facts worth listing.
 
 2. DIVERGENCES
-   Meaningful differences in HOW camps frame the same underlying event.
-   Only create a divergence if at least 2 distinct camps have data on the point.
-   If only one camp covers a point, put it in suspicious_gaps instead.
-   - `point`: a neutral description of what the dispute is about (one phrase)
-   - `camp_claims`: each camp's description in natural, flowing prose — not a
-     dry quote summary. Write as if explaining each side's perspective to a
-     reader. 2-4 sentences per camp is fine.
-   - `observation`: analytical explanation of WHY the framing gap exists —
-     what strategic interest, historical lens, or definitional choice drives it.
-     Be specific. Avoid generic phrases like "西方强调X，中方回避X".
+   Differences in HOW sources frame the same underlying event.
+   - Prefer cross-camp divergences (most analytically valuable).
+   - When all sources share the same bias_tag, surface meaningful within-source variations in emphasis, detail selection, or implicit framing.
+   - If there is genuinely only one article and no variation is possible, skip this section (empty list).
+   - `point`: neutral one-phrase description of the disputed aspect
+   - `camp_claims`: each source's framing in natural, flowing prose — 2-4 sentences per entry
+   - `observation`: WHY the framing gap exists (strategic interest, editorial choice, information access, audience assumptions). Be specific.
 
 3. SUSPICIOUS GAPS
-   A claim from one camp that the opposing camp(s) would have strong incentive
-   to report if true, yet did not. State: which camp reported it, what the claim
-   is, and why silence from the opposing camp is notable.
+   - Cross-camp: claims one camp makes that opposing camps would have strong incentive to cover if true, yet did not.
+   - If the batch is single-camp: explicitly list which major perspectives are ABSENT (e.g., 俄方、中方) and what questions those absent perspectives might answer very differently. This helps the reader know what they are NOT seeing.
 
 Rules:
 - Output Simplified Chinese. Proper nouns may keep original script.
 - Do not moralize or declare which side is correct.
+- NEVER return empty consensus_facts when there are 2+ articles — extract what the articles collectively establish even if it is mundane.
 - Strict JSON per schema. No prose, no fences.
 """
 

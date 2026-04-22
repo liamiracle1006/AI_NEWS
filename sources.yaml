@@ -44,6 +44,17 @@ sources:
     lang: "en"
     rss: "https://www.presstv.ir/rss.xml"
 
+  # ── Russian state (accessible from CN; may timeout via Western VPN) ──
+  - name: "RT English"
+    bias_tag: "russia-state"
+    lang: "en"
+    rss: "https://www.rt.com/rss/"
+
+  - name: "TASS English"
+    bias_tag: "russia-state"
+    lang: "en"
+    rss: "https://tass.com/rss/v2.xml"
+
   # ── Chinese state / English international outlets (direct RSS) ────────
   - name: "CGTN World"
     bias_tag: "china-state"
