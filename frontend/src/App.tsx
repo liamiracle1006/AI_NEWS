@@ -22,10 +22,16 @@ export default function App() {
   const [selectedCountry, setSelectedCountry] = useState<{ name: string; zh: string } | null>(null)
 
   useEffect(() => {
-    fetchHeatData()
-      .then(setHeatData)
-      .catch(() => {})
-      .finally(() => setHeatLoading(false))
+    const refresh = () =>
+      fetchHeatData()
+        .then(setHeatData)
+        .catch(() => {})
+        .finally(() => setHeatLoading(false))
+
+    refresh()
+    // Re-poll every 2 minutes so map colors update after startup cache finishes
+    const timer = setInterval(refresh, 120_000)
+    return () => clearInterval(timer)
   }, [])
 
   const handleAnalyze = async (keyword: string, maxArticles: number, trackPeople: boolean) => {

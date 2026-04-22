@@ -137,13 +137,16 @@ def cache_status() -> dict:
     }
 
 
+MAX_PER_SOURCE_CACHE = 50  # no artificial cap for daily snapshot
+
+
 def fetch_and_cache(cfg: AppConfig) -> List[Article]:
     """Fetch all RSS sources and save to today's cache. Returns the articles."""
     log.info("Fetching all RSS sources for daily cache...")
     articles = fetch_all(
         cfg.sources,
         window_hours=cfg.fetch_window_hours,
-        max_per_source=cfg.max_per_source,
+        max_per_source=MAX_PER_SOURCE_CACHE,  # ignore cfg cap; grab as much as possible
         fetch_body=True,
     )
     if articles:
