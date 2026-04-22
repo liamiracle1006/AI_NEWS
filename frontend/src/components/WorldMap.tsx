@@ -134,9 +134,9 @@ export function WorldMap({ heatData, onCountryClick, loading }: Props) {
         )}
       </div>
 
-      <div className="relative" style={{ height: 300 }}>
+      <div className="relative" style={{ height: 420 }}>
         <ComposableMap
-          projectionConfig={{ scale: 145, center: [10, 5] }}
+          projectionConfig={{ scale: 160, center: [10, 5] }}
           style={{ width: '100%', height: '100%' }}
         >
           <Geographies geography={GEO_URL}>
