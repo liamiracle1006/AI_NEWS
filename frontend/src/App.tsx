@@ -106,7 +106,7 @@ export default function App() {
         onClose={() => setSelectedCountry(null)}
         onAnalyze={(keyword) => {
           setSelectedCountry(null)
-          handleAnalyze(keyword, 10, true)
+          handleAnalyze(keyword, 30, true)
           setTimeout(() => {
             document.querySelector('main')?.scrollTo({ top: 400, behavior: 'smooth' })
             window.scrollTo({ top: 400, behavior: 'smooth' })

@@ -7,7 +7,7 @@ interface Props {
 
 export function AnalyzeForm({ onSubmit, loading }: Props) {
   const [keyword, setKeyword] = useState('')
-  const [maxArticles, setMaxArticles] = useState(10)
+  const [maxArticles, setMaxArticles] = useState(30)
   const [trackPeople, setTrackPeople] = useState(true)
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -37,7 +37,7 @@ export function AnalyzeForm({ onSubmit, loading }: Props) {
           <input
             type="number"
             min={3}
-            max={20}
+            max={50}
             value={maxArticles}
             onChange={e => setMaxArticles(Number(e.target.value))}
             className="w-16 border border-gray-300 rounded px-2 py-1 text-sm text-center"
