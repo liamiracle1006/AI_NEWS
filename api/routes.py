@@ -87,6 +87,23 @@ async def _run_analysis(job_id: str, req: AnalyzeRequest, expanded_keyword: str)
 
         hits = hits[:req.max_articles]
         total = len(hits)
+
+        # Fetch full article bodies in parallel (cache stores RSS metadata only)
+        needs_body = [a for a in hits if not a.body]
+        if needs_body:
+            emit("fetching", f"命中 {total} 篇，正在并行获取全文（{len(needs_body)} 篇）...")
+            from news.ingest import _extract_body
+            import concurrent.futures
+
+            def _fetch_body(article):
+                article.body = _extract_body(article.url)
+                return article
+
+            await loop.run_in_executor(
+                None,
+                lambda: list(concurrent.futures.ThreadPoolExecutor(max_workers=8).map(_fetch_body, needs_body)),
+            )
+
         emit("extracting", f"命中 {total} 篇，开始并行提取事实...")
 
         provider = get_provider(cfg)
