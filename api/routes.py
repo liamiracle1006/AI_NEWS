@@ -73,7 +73,7 @@ async def _run_analysis(job_id: str, req: AnalyzeRequest, expanded_keyword: str)
 
         status = cache_status()
         if req.week_mode:
-            emit("fetching", f"读取近 7 天缓存（{status.get('article_count', '?')} 篇文章）进行本周综合分析...")
+            emit("fetching", f"读取近 7 天缓存（共 {status.get('article_count', '?')} 篇）进行本周综合分析...")
             articles = await loop.run_in_executor(None, lambda: load_or_fetch(cfg))
         elif req.analyze_date:
             emit("fetching", f"读取 {req.analyze_date} 的文章进行分析...")
@@ -92,13 +92,17 @@ async def _run_analysis(job_id: str, req: AnalyzeRequest, expanded_keyword: str)
             job["error"] = "未找到匹配文章"
             return
 
-        hits = hits[:req.max_articles]
+        # Week mode: use all matched articles (up to a safety cap of 60).
+        # Day mode: respect the user-configured max_articles.
+        cap = min(len(hits), 60) if req.week_mode else req.max_articles
+        hits = hits[:cap]
         total = len(hits)
 
         # Fetch full article bodies in parallel (cache stores RSS metadata only)
         needs_body = [a for a in hits if not a.body]
+        scope_label = "本周" if req.week_mode else "当日"
         if needs_body:
-            emit("fetching", f"命中 {total} 篇，正在并行获取全文（{len(needs_body)} 篇）...")
+            emit("fetching", f"{scope_label}命中 {total} 篇，正在并行获取全文（{len(needs_body)} 篇）...")
             from news.ingest import _extract_body
             import concurrent.futures
 
@@ -114,7 +118,7 @@ async def _run_analysis(job_id: str, req: AnalyzeRequest, expanded_keyword: str)
 
             await loop.run_in_executor(None, _fetch_all_bodies)
 
-        emit("extracting", f"命中 {total} 篇，开始并行提取事实...")
+        emit("extracting", f"{scope_label}命中 {total} 篇，开始并行提取事实...")
 
         provider = get_provider(cfg)
 
