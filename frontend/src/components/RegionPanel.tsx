@@ -74,8 +74,8 @@ export function RegionPanel({ countryName, countryZh, heatCount, open, onClose, 
               </button>
             </div>
 
-            {/* Analyze button */}
-            {onAnalyze && isToday && (
+            {/* Analyze button — always uses today's cache regardless of map date */}
+            {onAnalyze && (
               <button
                 onClick={() => { onClose(); onAnalyze(countryName, viewMode === 'week') }}
                 className="text-xs px-2.5 py-1 rounded bg-blue-600 text-white hover:bg-blue-700 transition-colors whitespace-nowrap"
