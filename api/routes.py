@@ -92,9 +92,9 @@ async def _run_analysis(job_id: str, req: AnalyzeRequest, expanded_keyword: str)
             job["error"] = "未找到匹配文章"
             return
 
-        # Week mode: use all matched articles (up to a safety cap of 60).
+        # Week mode: use all matched articles (up to a safety cap of 100).
         # Day mode: respect the user-configured max_articles.
-        cap = min(len(hits), 60) if req.week_mode else req.max_articles
+        cap = min(len(hits), 100) if req.week_mode else req.max_articles
         hits = hits[:cap]
         total = len(hits)
 
