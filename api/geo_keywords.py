@@ -24,7 +24,7 @@ GEO_KEYWORDS: dict[str, list[str]] = {
     # Display name on the map is "中国台湾" (handled in frontend ZH_NAMES).
     "Taiwan": [
         "Taiwan", "台湾", "Taipei", "台北", "TSMC", "台积电",
-        "Lai Ching-te", "赖清德", "DPP", "民进党", "ROC",
+        "Lai Ching-te", "赖清德", "DPP", "民进党",
     ],
     "Japan": [
         "Japan", "Japanese", "日本", "Tokyo", "东京", "Osaka", "大阪",
