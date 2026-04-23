@@ -130,9 +130,9 @@ export default function App() {
         open={selectedCountry !== null}
         onClose={() => setSelectedCountry(null)}
         selectedDate={selectedDate}
-        onAnalyze={(keyword) => {
+        onAnalyze={(keyword, weekMode) => {
           setSelectedCountry(null)
-          handleAnalyze(keyword, 30, true)
+          handleAnalyze(keyword, 30, true, weekMode)
           setTimeout(() => {
             document.querySelector('main')?.scrollTo({ top: 400, behavior: 'smooth' })
             window.scrollTo({ top: 400, behavior: 'smooth' })

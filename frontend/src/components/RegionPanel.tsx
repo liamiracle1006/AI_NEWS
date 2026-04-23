@@ -10,26 +10,36 @@ interface Props {
   open: boolean
   onClose: () => void
   selectedDate?: string
-  onAnalyze?: (keyword: string) => void
+  onAnalyze?: (keyword: string, weekMode?: boolean) => void
 }
 
 export function RegionPanel({ countryName, countryZh, heatCount, open, onClose, selectedDate, onAnalyze }: Props) {
   const [articles, setArticles] = useState<MapArticle[]>([])
   const [loading, setLoading] = useState(false)
+  const [viewMode, setViewMode] = useState<'day' | 'week'>('day')
+
+  const today = new Date().toISOString().slice(0, 10)
+  const isToday = !selectedDate || selectedDate === today
 
   useEffect(() => {
     if (!open || !countryName) return
     setLoading(true)
     setArticles([])
-    fetchMapArticles(countryName, selectedDate)
+    const weekMode = viewMode === 'week'
+    fetchMapArticles(countryName, weekMode ? undefined : selectedDate, weekMode)
       .then(setArticles)
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [open, countryName, selectedDate])
+  }, [open, countryName, selectedDate, viewMode])
 
-  const today = new Date().toISOString().slice(0, 10)
-  const isToday = !selectedDate || selectedDate === today
-  const dateLabel = isToday ? '今日' : selectedDate
+  // Reset to day view when panel opens for a new country
+  useEffect(() => {
+    if (open) setViewMode('day')
+  }, [countryName, open])
+
+  const dateLabel = viewMode === 'week'
+    ? '近 7 天'
+    : isToday ? '今日' : selectedDate
 
   if (!open) return null
 
@@ -39,28 +49,47 @@ export function RegionPanel({ countryName, countryZh, heatCount, open, onClose, 
 
       <div className="fixed top-0 right-0 h-full w-96 bg-white shadow-xl z-30 flex flex-col">
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200">
-          <div>
+        <div className="px-4 py-3 border-b border-gray-200">
+          <div className="flex items-center justify-between mb-2">
             <h2 className="font-semibold text-gray-800">
               📍 {countryZh || countryName}
             </h2>
-            {heatCount > 0 && (
-              <p className="text-xs text-gray-400 mt-0.5">
-                {dateLabel} RSS 命中 <span className="font-medium text-gray-600">{heatCount}</span> 篇相关报道
-              </p>
-            )}
-          </div>
-          <div className="flex items-center gap-2">
-            {onAnalyze && isToday && (
-              <button
-                onClick={() => { onClose(); onAnalyze(countryName) }}
-                className="text-xs px-2.5 py-1 rounded bg-blue-600 text-white hover:bg-blue-700 transition-colors whitespace-nowrap"
-              >
-                深度分析
-              </button>
-            )}
             <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
           </div>
+
+          <div className="flex items-center justify-between">
+            {/* Day / Week toggle */}
+            <div className="flex rounded-lg border border-gray-200 overflow-hidden text-xs">
+              <button
+                onClick={() => setViewMode('day')}
+                className={`px-3 py-1 transition-colors ${viewMode === 'day' ? 'bg-blue-600 text-white' : 'bg-white text-gray-500 hover:bg-gray-50'}`}
+              >
+                {isToday ? '今天' : selectedDate?.slice(5) ?? '当天'}
+              </button>
+              <button
+                onClick={() => setViewMode('week')}
+                className={`px-3 py-1 transition-colors ${viewMode === 'week' ? 'bg-blue-600 text-white' : 'bg-white text-gray-500 hover:bg-gray-50'}`}
+              >
+                本周
+              </button>
+            </div>
+
+            {/* Analyze button */}
+            {onAnalyze && isToday && (
+              <button
+                onClick={() => { onClose(); onAnalyze(countryName, viewMode === 'week') }}
+                className="text-xs px-2.5 py-1 rounded bg-blue-600 text-white hover:bg-blue-700 transition-colors whitespace-nowrap"
+              >
+                {viewMode === 'week' ? '本周深度分析' : '深度分析'}
+              </button>
+            )}
+          </div>
+
+          {heatCount > 0 && (
+            <p className="text-xs text-gray-400 mt-1.5">
+              {dateLabel} RSS 命中 <span className="font-medium text-gray-600">{heatCount}</span> 篇相关报道
+            </p>
+          )}
         </div>
 
         {/* Article list */}
@@ -72,8 +101,8 @@ export function RegionPanel({ countryName, countryZh, heatCount, open, onClose, 
           {!loading && articles.length === 0 && (
             <div className="px-4 py-12 text-center text-sm text-gray-400">
               {dateLabel} 缓存中暂无与该地区相关的报道。
-              {isToday && (
-                <span className="text-xs mt-1 block">缓存每天自动更新，或点击右上角"刷新"重新抓取。</span>
+              {isToday && viewMode === 'day' && (
+                <span className="text-xs mt-1 block">可切换至"本周"查看近期报道。</span>
               )}
             </div>
           )}
@@ -108,7 +137,7 @@ export function RegionPanel({ countryName, countryZh, heatCount, open, onClose, 
         </div>
 
         <div className="px-4 py-3 border-t border-gray-100 text-xs text-gray-400">
-          {isToday ? '数据来自今日 RSS 缓存 · 每天自动更新' : `数据来自 ${selectedDate} 缓存`}
+          {viewMode === 'week' ? '数据来自近 7 天 RSS 缓存' : isToday ? '数据来自今日 RSS 缓存 · 每天自动更新' : `数据来自 ${selectedDate} 缓存`}
         </div>
       </div>
     </>

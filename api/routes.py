@@ -315,12 +315,17 @@ def _filter_by_published_date(articles: list, date_str: str) -> list:
     return [a for a in articles if a.published_at and a.published_at.date() == target]
 
 
-async def _load_articles_for_date(date_str: str, loop) -> list:
-    """Return the best available article list for a given date.
+async def _load_all_recent(loop) -> list:
+    """Return today's full 7-day rolling cache (unfiltered by publish date)."""
+    cfg = await loop.run_in_executor(None, load_config)
+    return await loop.run_in_executor(None, lambda: load_or_fetch(cfg))
 
-    - Today: full 7-day rolling cache, unfiltered (today is still in progress).
-    - Within 7 days: today's cache filtered by published_at == date (most complete source).
-    - Older: that date's own cache file filtered by published_at == date.
+
+async def _load_articles_for_date(date_str: str, loop) -> list:
+    """Return articles whose published_at falls on date_str.
+
+    Uses today's 7-day cache as source (most complete) for recent dates,
+    falling back to the historical cache file for older dates.
     """
     from datetime import date as _date
     today_str = _date.today().isoformat()
@@ -328,9 +333,6 @@ async def _load_articles_for_date(date_str: str, loop) -> list:
     days_ago = (today - _date.fromisoformat(date_str)).days
 
     cfg = await loop.run_in_executor(None, load_config)
-
-    if date_str == today_str:
-        return await loop.run_in_executor(None, lambda: load_or_fetch(cfg))
 
     if days_ago <= 7:
         all_articles = await loop.run_in_executor(None, lambda: load_or_fetch(cfg))
@@ -368,17 +370,25 @@ async def get_map_heat(date: str | None = None):
 # ── Map: articles by country ─────────────────────────────────────────────────
 
 @router.get("/map/articles")
-async def get_map_articles(country: str, date: str | None = None):
-    """Return cached articles related to a country for a given date (default: today)."""
+async def get_map_articles(country: str, date: str | None = None, week: bool = False):
+    """Return cached articles for a country.
+
+    - week=true: all articles from the 7-day rolling cache (ignores date param)
+    - date=YYYY-MM-DD: articles published on that specific date
+    - default (no params): articles published today
+    """
     from datetime import date as _date, timezone
     loop = asyncio.get_running_loop()
     keywords = GEO_KEYWORDS.get(country, [])
     if not keywords:
         return []
 
-    today_str = _date.today().isoformat()
-    key = date or today_str
-    articles = await _load_articles_for_date(key, loop)
+    if week:
+        articles = await _load_all_recent(loop)
+    else:
+        today_str = _date.today().isoformat()
+        key = date or today_str
+        articles = await _load_articles_for_date(key, loop)
 
     needles = [k.lower() for k in keywords]
 

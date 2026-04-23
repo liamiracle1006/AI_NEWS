@@ -57,9 +57,10 @@ export async function fetchHeatData(date?: string): Promise<Record<string, numbe
   return res.json()
 }
 
-export async function fetchMapArticles(country: string, date?: string): Promise<MapArticle[]> {
+export async function fetchMapArticles(country: string, date?: string, week = false): Promise<MapArticle[]> {
   const params = new URLSearchParams({ country })
-  if (date) params.set('date', date)
+  if (week) params.set('week', 'true')
+  else if (date) params.set('date', date)
   const res = await fetch(`/api/map/articles?${params}`)
   if (!res.ok) throw new Error('Failed to fetch articles')
   return res.json()
