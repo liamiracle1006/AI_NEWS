@@ -5,8 +5,12 @@ import { ResultView } from './components/ResultView'
 import { HistoryPanel } from './components/HistoryPanel'
 import { WorldMap } from './components/WorldMap'
 import { RegionPanel } from './components/RegionPanel'
-import { startAnalyze, fetchResult, subscribeToProgress, fetchHeatData } from './api'
+import { startAnalyze, fetchResult, subscribeToProgress, fetchHeatData, fetchCachedDates } from './api'
 import type { AnalysisResult, ProgressEvent } from './types'
+
+function todayStr() {
+  return new Date().toISOString().slice(0, 10)
+}
 
 export default function App() {
   const [loading, setLoading] = useState(false)
@@ -21,18 +25,34 @@ export default function App() {
   const [heatLoading, setHeatLoading] = useState(true)
   const [selectedCountry, setSelectedCountry] = useState<{ name: string; zh: string } | null>(null)
 
+  // Date navigation for the map
+  const [selectedDate, setSelectedDate] = useState(todayStr())
+  const [availableDates, setAvailableDates] = useState<string[]>([])
+
+  // Load available dates once on mount
   useEffect(() => {
+    fetchCachedDates()
+      .then(setAvailableDates)
+      .catch(() => {})
+  }, [])
+
+  // Reload heat data whenever selectedDate changes; also poll every 2 min for today
+  useEffect(() => {
+    const isToday = selectedDate === todayStr()
+
     const refresh = () =>
-      fetchHeatData()
+      fetchHeatData(selectedDate)
         .then(setHeatData)
         .catch(() => {})
         .finally(() => setHeatLoading(false))
 
+    setHeatLoading(true)
     refresh()
-    // Re-poll every 2 minutes so map colors update after startup cache finishes
+
+    if (!isToday) return
     const timer = setInterval(refresh, 120_000)
     return () => clearInterval(timer)
-  }, [])
+  }, [selectedDate])
 
   const handleAnalyze = async (keyword: string, maxArticles: number, trackPeople: boolean) => {
     setLoading(true)
@@ -78,6 +98,11 @@ export default function App() {
     setEvents([])
   }
 
+  const handleDateChange = (date: string) => {
+    setSelectedDate(date)
+    setSelectedCountry(null)
+  }
+
   return (
     <div className="min-h-screen bg-gray-50">
       <header className="bg-white border-b border-gray-200 sticky top-0 z-10">
@@ -104,6 +129,7 @@ export default function App() {
         heatCount={selectedCountry ? (heatData[selectedCountry.name] ?? 0) : 0}
         open={selectedCountry !== null}
         onClose={() => setSelectedCountry(null)}
+        selectedDate={selectedDate}
         onAnalyze={(keyword) => {
           setSelectedCountry(null)
           handleAnalyze(keyword, 30, true)
@@ -119,6 +145,9 @@ export default function App() {
         <WorldMap
           heatData={heatData}
           loading={heatLoading}
+          selectedDate={selectedDate}
+          availableDates={availableDates}
+          onDateChange={handleDateChange}
           onCountryClick={(name, zh) => setSelectedCountry({ name, zh })}
         />
 

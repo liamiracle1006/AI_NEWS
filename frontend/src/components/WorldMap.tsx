@@ -118,17 +118,54 @@ interface Props {
   heatData: Record<string, number>
   onCountryClick: (name: string, zhName: string) => void
   loading: boolean
+  selectedDate: string
+  availableDates: string[]
+  onDateChange: (date: string) => void
 }
 
-export function WorldMap({ heatData, onCountryClick, loading }: Props) {
+function formatDate(dateStr: string): string {
+  const today = new Date().toISOString().slice(0, 10)
+  const yesterday = new Date(Date.now() - 86400_000).toISOString().slice(0, 10)
+  if (dateStr === today) return '今天'
+  if (dateStr === yesterday) return '昨天'
+  return dateStr.replace(/^(\d{4})-(\d{2})-(\d{2})$/, '$2/$3')
+}
+
+export function WorldMap({ heatData, onCountryClick, loading, selectedDate, availableDates, onDateChange }: Props) {
   const [tooltip, setTooltip] = useState<{ zh: string; count: number; x: number; y: number } | null>(null)
 
   const max = useMemo(() => Math.max(0, ...Object.values(heatData)), [heatData])
+
+  const currentIdx = availableDates.indexOf(selectedDate)
+  const canPrev = currentIdx < availableDates.length - 1  // older dates have higher index
+  const canNext = currentIdx > 0                           // newer dates have lower index
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
       <div className="flex items-center justify-between px-4 py-2 border-b border-gray-100">
         <span className="text-sm font-semibold text-gray-700">🗺️ 全球新闻热度</span>
+
+        {/* Date navigator */}
+        <div className="flex items-center gap-1 text-xs">
+          <button
+            onClick={() => canPrev && onDateChange(availableDates[currentIdx + 1])}
+            disabled={!canPrev}
+            className="px-1.5 py-0.5 rounded hover:bg-gray-100 disabled:opacity-30 disabled:cursor-not-allowed text-gray-500"
+          >
+            ‹
+          </button>
+          <span className="w-16 text-center font-medium text-gray-700">
+            {availableDates.length > 0 ? formatDate(selectedDate) : '—'}
+          </span>
+          <button
+            onClick={() => canNext && onDateChange(availableDates[currentIdx - 1])}
+            disabled={!canNext}
+            className="px-1.5 py-0.5 rounded hover:bg-gray-100 disabled:opacity-30 disabled:cursor-not-allowed text-gray-500"
+          >
+            ›
+          </button>
+        </div>
+
         {loading && (
           <span className="text-xs text-gray-400 animate-pulse">加载中...</span>
         )}

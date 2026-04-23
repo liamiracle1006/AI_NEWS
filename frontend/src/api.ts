@@ -43,14 +43,23 @@ export async function fetchBriefData(id: string): Promise<import('./types').Anal
   return res.json()
 }
 
-export async function fetchHeatData(): Promise<Record<string, number>> {
-  const res = await fetch('/api/map/heat')
+export async function fetchCachedDates(): Promise<string[]> {
+  const res = await fetch('/api/cache/dates')
+  if (!res.ok) throw new Error('Failed to fetch cached dates')
+  return res.json()
+}
+
+export async function fetchHeatData(date?: string): Promise<Record<string, number>> {
+  const url = date ? `/api/map/heat?date=${date}` : '/api/map/heat'
+  const res = await fetch(url)
   if (!res.ok) throw new Error('Failed to fetch heat data')
   return res.json()
 }
 
-export async function fetchMapArticles(country: string): Promise<MapArticle[]> {
-  const res = await fetch(`/api/map/articles?country=${encodeURIComponent(country)}`)
+export async function fetchMapArticles(country: string, date?: string): Promise<MapArticle[]> {
+  const params = new URLSearchParams({ country })
+  if (date) params.set('date', date)
+  const res = await fetch(`/api/map/articles?${params}`)
   if (!res.ok) throw new Error('Failed to fetch articles')
   return res.json()
 }

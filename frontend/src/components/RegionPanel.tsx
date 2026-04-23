@@ -9,10 +9,11 @@ interface Props {
   heatCount: number
   open: boolean
   onClose: () => void
+  selectedDate?: string
   onAnalyze?: (keyword: string) => void
 }
 
-export function RegionPanel({ countryName, countryZh, heatCount, open, onClose, onAnalyze }: Props) {
+export function RegionPanel({ countryName, countryZh, heatCount, open, onClose, selectedDate, onAnalyze }: Props) {
   const [articles, setArticles] = useState<MapArticle[]>([])
   const [loading, setLoading] = useState(false)
 
@@ -20,11 +21,15 @@ export function RegionPanel({ countryName, countryZh, heatCount, open, onClose, 
     if (!open || !countryName) return
     setLoading(true)
     setArticles([])
-    fetchMapArticles(countryName)
+    fetchMapArticles(countryName, selectedDate)
       .then(setArticles)
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [open, countryName])
+  }, [open, countryName, selectedDate])
+
+  const today = new Date().toISOString().slice(0, 10)
+  const isToday = !selectedDate || selectedDate === today
+  const dateLabel = isToday ? '今日' : selectedDate
 
   if (!open) return null
 
@@ -41,12 +46,12 @@ export function RegionPanel({ countryName, countryZh, heatCount, open, onClose, 
             </h2>
             {heatCount > 0 && (
               <p className="text-xs text-gray-400 mt-0.5">
-                今日 RSS 命中 <span className="font-medium text-gray-600">{heatCount}</span> 篇相关报道
+                {dateLabel} RSS 命中 <span className="font-medium text-gray-600">{heatCount}</span> 篇相关报道
               </p>
             )}
           </div>
           <div className="flex items-center gap-2">
-            {onAnalyze && (
+            {onAnalyze && isToday && (
               <button
                 onClick={() => { onClose(); onAnalyze(countryZh || countryName) }}
                 className="text-xs px-2.5 py-1 rounded bg-blue-600 text-white hover:bg-blue-700 transition-colors whitespace-nowrap"
@@ -66,9 +71,10 @@ export function RegionPanel({ countryName, countryZh, heatCount, open, onClose, 
 
           {!loading && articles.length === 0 && (
             <div className="px-4 py-12 text-center text-sm text-gray-400">
-              今日缓存中暂无与该地区相关的报道。
-              <br />
-              <span className="text-xs mt-1 block">缓存每天自动更新，或点击右上角"刷新"重新抓取。</span>
+              {dateLabel} 缓存中暂无与该地区相关的报道。
+              {isToday && (
+                <span className="text-xs mt-1 block">缓存每天自动更新，或点击右上角"刷新"重新抓取。</span>
+              )}
             </div>
           )}
 
@@ -102,7 +108,7 @@ export function RegionPanel({ countryName, countryZh, heatCount, open, onClose, 
         </div>
 
         <div className="px-4 py-3 border-t border-gray-100 text-xs text-gray-400">
-          数据来自今日 RSS 缓存 · 每天自动更新
+          {isToday ? '数据来自今日 RSS 缓存 · 每天自动更新' : `数据来自 ${selectedDate} 缓存`}
         </div>
       </div>
     </>

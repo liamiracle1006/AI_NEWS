@@ -19,7 +19,7 @@ from news.pipeline import expand_keyword, extract_facts_batch, cross_reference, 
 from news.ingest import fetch_all
 from news.cluster import filter_by_keyword
 from news.output import render_markdown, write_brief
-from news.article_cache import load_or_fetch, fetch_and_cache, cache_status
+from news.article_cache import load_or_fetch, fetch_and_cache, cache_status, load_date, list_cached_dates
 from api.geo_keywords import GEO_KEYWORDS
 
 router = APIRouter()
@@ -27,10 +27,10 @@ router = APIRouter()
 # In-memory job store: {job_id: {"status": ..., "events": Queue, "result": ..., "error": ...}}
 _jobs: dict[str, dict[str, Any]] = {}
 
-# Heat map cache: refreshed at most once every 10 minutes
-_heat_cache: dict[str, int] = {}
-_heat_ts: float = 0.0
-_HEAT_TTL = 600  # seconds
+# Heat map cache: {date_str -> (heat_dict, timestamp)}
+# Today's entry is refreshed every 10 min; historical dates are loaded once and kept forever.
+_heat_cache: dict[str, tuple[dict[str, int], float]] = {}
+_HEAT_TTL = 600  # seconds — only applies to today's entry
 
 
 # ── Request / Response schemas ────────────────────────────────────────────────
@@ -293,45 +293,69 @@ async def get_brief_data(brief_id: str):
 
 # ── Geo heat map ──────────────────────────────────────────────────────────────
 
-def _build_heat() -> dict[str, int]:
-    """Count per-country mentions from today's article cache (no LLM, no live fetch)."""
-    cfg = load_config()
-    articles = load_or_fetch(cfg)
+
+def _build_heat_for(articles) -> dict[str, int]:
+    """Count articles per country using GEO_KEYWORDS matching."""
     counts: dict[str, int] = {}
     for article in articles:
         text = f"{article.title} {article.summary or ''}".lower()
         for country, keywords in GEO_KEYWORDS.items():
-            for kw in keywords:
-                if kw.lower() in text:
-                    counts[country] = counts.get(country, 0) + 1
-                    break
+            if any(k.lower() in text for k in keywords):
+                counts[country] = counts.get(country, 0) + 1
     return counts
 
 
 @router.get("/map/heat")
-async def get_map_heat():
-    """Return per-country article mention counts (10-min in-memory cache on top of daily cache)."""
-    global _heat_cache, _heat_ts
+async def get_map_heat(date: str | None = None):
+    """Return per-country article mention counts for a given date (default: today).
+
+    Today's result is refreshed at most every 10 min.
+    Historical dates are loaded once and cached in memory indefinitely.
+    """
+    from datetime import date as _date
     loop = asyncio.get_running_loop()
+    today_str = _date.today().isoformat()
+    key = date or today_str
     now = time.time()
-    if now - _heat_ts > _HEAT_TTL:
-        _heat_cache = await loop.run_in_executor(None, _build_heat)
-        _heat_ts = now
-    return _heat_cache
+
+    cached = _heat_cache.get(key)
+    if cached:
+        heat, ts = cached
+        is_today = (key == today_str)
+        if not is_today or (now - ts < _HEAT_TTL):
+            return heat
+
+    # Build heat for the requested date
+    if key == today_str:
+        cfg = await loop.run_in_executor(None, load_config)
+        articles = await loop.run_in_executor(None, lambda: load_or_fetch(cfg))
+    else:
+        articles = await loop.run_in_executor(None, lambda: load_date(key) or [])
+
+    heat = await loop.run_in_executor(None, lambda: _build_heat_for(articles))
+    _heat_cache[key] = (heat, now)
+    return heat
 
 
 # ── Map: articles by country ─────────────────────────────────────────────────
 
 @router.get("/map/articles")
-async def get_map_articles(country: str):
-    """Return all cached articles related to a country, sorted newest first."""
+async def get_map_articles(country: str, date: str | None = None):
+    """Return cached articles related to a country for a given date (default: today)."""
+    from datetime import date as _date, timezone
     loop = asyncio.get_running_loop()
     keywords = GEO_KEYWORDS.get(country, [])
     if not keywords:
         return []
 
-    cfg = await loop.run_in_executor(None, load_config)
-    articles = await loop.run_in_executor(None, lambda: load_or_fetch(cfg))
+    today_str = _date.today().isoformat()
+    key = date or today_str
+
+    if key == today_str:
+        cfg = await loop.run_in_executor(None, load_config)
+        articles = await loop.run_in_executor(None, lambda: load_or_fetch(cfg))
+    else:
+        articles = await loop.run_in_executor(None, lambda: load_date(key) or [])
 
     needles = [k.lower() for k in keywords]
 
@@ -339,9 +363,7 @@ async def get_map_articles(country: str):
         text = f"{a.title} {a.summary or ''}".lower()
         return any(n in text for n in needles)
 
-    from datetime import timezone
     _MIN_DT = datetime.min.replace(tzinfo=timezone.utc)
-
     hits = [a for a in articles if matches(a)]
     hits.sort(key=lambda a: a.published_at or _MIN_DT, reverse=True)
 
@@ -359,6 +381,12 @@ async def get_map_articles(country: str):
 
 
 # ── Article cache management ──────────────────────────────────────────────────
+
+@router.get("/cache/dates")
+async def get_cache_dates():
+    """List all available cached dates (newest first)."""
+    return list_cached_dates()
+
 
 @router.get("/cache/status")
 async def get_cache_status():
