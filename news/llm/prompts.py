@@ -166,15 +166,21 @@ def build_cross_reference_prompt(topic: str, facts_bundle: list) -> tuple[str, s
 
 SYNONYM_EXPANSION_SYSTEM = """\
 You are a multilingual news search assistant.
-Given a news topic keyword, return a comprehensive list of synonyms, alternative
-names, abbreviations, and translations that international news sources use
-(Chinese, English, Arabic, Russian, French as relevant).
+Given a news topic keyword, return synonyms and alternate names that actually
+appear as written text inside English-language or Simplified-Chinese-language
+news articles. These terms are used for substring matching against article
+titles and summaries, so every term must be practical.
 
 RULES:
 1. Include the original keyword as-is.
-2. Add common translations and alternate spellings used by major news agencies.
-3. Limit to 6-10 terms — quality over quantity.
-4. Output strict JSON only. No prose, no fences.
+2. Add English spellings/abbreviations and Simplified Chinese equivalents
+   that major news agencies (AP, BBC, Reuters, SCMP, Al Jazeera) use in print.
+3. DO NOT include transliterations in Arabic script, Cyrillic, or other
+   non-Latin/non-Chinese scripts — they will never appear in our sources.
+4. DO NOT include overly generic terms (e.g. "China", "government") that
+   would match unrelated articles.
+5. Limit to 5-8 terms — quality over quantity.
+6. Output strict JSON only. No prose, no fences.
 """
 
 SYNONYM_EXPANSION_USER_TEMPLATE = """\
