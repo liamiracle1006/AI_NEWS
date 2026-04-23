@@ -38,6 +38,13 @@ def filter_by_keyword(
 
     `keyword_expr` uses pipe `|` for synonyms, e.g. "乌克兰|Ukraine|Kyiv".
     Matching is case-insensitive substring (good enough for zh + en).
+
+    Three-level cascade — each level only used when the previous yields < min_hits:
+      L1: title match  (article is primarily about this topic)
+      L2: + summary match (topic mentioned prominently)
+      L3: + body match  (topic mentioned anywhere)
+    This prevents articles that casually mention a keyword in passing from
+    polluting results when there are already enough on-topic articles.
     """
     needles = _parse_keywords(keyword_expr)
     if not needles:
@@ -45,23 +52,25 @@ def filter_by_keyword(
 
     articles = list(articles)
 
-    # Level 1: title + summary (no cost, fast)
-    level1 = [
-        a for a in articles
-        if _contains_any(a.title, needles) or _contains_any(a.summary, needles)
-    ]
-    log.info("keyword filter L1 (title/summary): %d hits", len(level1))
-    if len(level1) >= min_hits:
-        return _dedupe(level1)
+    # L1: title only — strongest signal
+    title_hits = [a for a in articles if _contains_any(a.title, needles)]
+    log.info("keyword filter L1 (title): %d hits", len(title_hits))
+    if len(title_hits) >= min_hits:
+        return _dedupe(title_hits)
 
-    # Level 2: extend to body
-    seen_urls = {a.url for a in level1}
-    level2 = [
-        a for a in articles
-        if a.url not in seen_urls and _contains_any(a.body, needles)
-    ]
-    log.info("keyword filter L2 (body): +%d hits", len(level2))
-    return _dedupe(level1 + level2)
+    # L2: extend to summary
+    seen = {a.url for a in title_hits}
+    summary_hits = [a for a in articles if a.url not in seen and _contains_any(a.summary, needles)]
+    log.info("keyword filter L2 (summary): +%d hits", len(summary_hits))
+    l2 = title_hits + summary_hits
+    if len(l2) >= min_hits:
+        return _dedupe(l2)
+
+    # L3: extend to body
+    seen = {a.url for a in l2}
+    body_hits = [a for a in articles if a.url not in seen and _contains_any(a.body, needles)]
+    log.info("keyword filter L3 (body): +%d hits", len(body_hits))
+    return _dedupe(l2 + body_hits)
 
 
 def _dedupe(articles: List[Article]) -> List[Article]:

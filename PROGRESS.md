@@ -637,6 +637,41 @@ python -m news.main graph --person "普京" --depth 2
 
 ---
 
+## Phase 6 · 地图交互精细化 + 分析范围修复 · 2026-04-23
+
+**目标**
+修复台湾深度分析的关键词问题、按天浏览文章（UTC+8 日期过滤）、RegionPanel 内置今天/本周切换、分析时机与面板视图对齐。
+
+**新增/修改文件**
+
+| 文件 | 改动 |
+|---|---|
+| `api/geo_keywords.py` | 台湾从中国关键词中剥离，单独建 "Taiwan" 词条（含赖清德/DPP/TSMC/台积电等）；中国词条仅保留大陆相关词 |
+| `api/routes.py` | 新增 `_filter_by_published_date`（UTC+8 日期比对）；`_load_articles_for_date`（7 天缓存内按日期过滤）；`_load_all_recent`（不过滤，用于本周分析）；`AnalyzeRequest` 增加 `week_mode` / `analyze_date`；分析分支：week_mode→全量，analyze_date→日期过滤，默认→今天过滤 |
+| `frontend/src/components/WorldMap.tsx` | REDIRECT 仅归一化台湾名称变体→"Taiwan"（不再合并到 China）；ZH_NAMES 映射 Taiwan→"中国台湾"；地图高度 540px / scale 175；顶部日期导航栏 |
+| `frontend/src/components/RegionPanel.tsx` | 新增今天/本周切换 toggle；"深度分析"按钮始终显示（移除 isToday 限制）；按钮传递当前视图的日期范围给分析接口；切换新国家自动重置为今天视图 |
+| `frontend/src/components/AnalyzeForm.tsx` | 新增"本周综合"复选框，勾选时传 `week_mode=true` |
+| `frontend/src/App.tsx` | `handleAnalyze` 支持 `weekMode` + `analyzeDate`；`handleDateChange` 同时重置 selectedCountry |
+| `frontend/src/api.ts` | `startAnalyze` 透传 `week_mode` / `analyze_date`；`fetchMapArticles` 支持 `week` 参数；新增 `fetchCachedDates()` |
+| `news/llm/prompts.py` | 同义词扩展 prompt 限制输出为英文/简体中文，禁止阿拉伯文/西里尔等非拉丁非中文脚本，避免生成 RSS 标题里不存在的词 |
+| `news/cluster.py` | 关键词过滤改为三级级联：L1 标题匹配（主要来源）→ L2 摘要匹配 → L3 正文匹配；有足够标题命中时不再纳入"路过提及"的无关文章 |
+
+**关键技术决策**
+
+- **台湾数据独立但显示为中国台湾**：`REDIRECT` 只归一化台湾多边形名称变体，不合并到 China。颜色使用台湾自己的热度计数，点击打开台湾专属文章面板，地图和面板均显示"中国台湾"。
+- **UTC+8 日期过滤**：RSS 文章的 `published_at` 存为 UTC；显示"今天"或历史日期时，先 `.astimezone(UTC+8)` 再比对日期，避免 SGT 凌晨发布的文章被错划到前一天。
+- **关键词传英文名**：RegionPanel 的深度分析按钮传 `countryName`（英文，如"Taiwan"）而非 `countryZh`（如"中国台湾"），让 LLM 正确扩展为 Taiwan|台湾|Taipei，而非生成无用的阿拉伯/俄语转写。
+- **标题优先过滤**：防止只在正文某处提及关键词的无关文章污染分析结果（如墨西哥报道提到"台湾"一句话就被纳入）。
+
+**已知限制**
+
+- 110m 分辨率地图下，部分小国（卡塔尔、新加坡）无独立多边形，热度归入邻近区域。
+- 本周分析使用今天的 7 天滚动缓存，不同日期查看地图时的"本周"范围固定为今天往前 7 天。
+
+**Commits**：`8a1d992` · `04a8655` · `38d4e57` · `556c3c3`
+
+---
+
 ## 约定
 
 - **每个 commit 必须更新本文档**。如果改动小到不值得开新节，就追加到最近一节的"后续修补"小节里。
