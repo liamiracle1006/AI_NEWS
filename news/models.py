@@ -116,8 +116,25 @@ class CampFirstSeen(BaseModel):
     lag_hours: float                         # Hours after the globally-earliest camp
 
 
+class AttentionPeriod(BaseModel):
+    """Thematic focus for one time period — feeds the Sankey diagram."""
+    label: str                                   # e.g. "4月16–18日"
+    themes: Dict[str, int] = Field(default_factory=dict)  # theme → article count
+
+
+class CampElasticity(BaseModel):
+    """Whether a bias camp shifted its narrative framing over the week."""
+    bias_tag: str
+    early_stance: str                            # 1 sentence: early-week framing
+    late_stance: str                             # 1 sentence: late-week framing
+    shifted: bool                                # True if framing meaningfully changed
+    shift_description: Optional[str] = None      # Why / how it shifted
+
+
 class WeeklyExtras(BaseModel):
     """Additional temporal analysis produced only in week_mode."""
     story_arc: List[NarrativeNode] = Field(default_factory=list)
     camp_first_seen: List[CampFirstSeen] = Field(default_factory=list)
-    daily_counts: Dict[str, int] = Field(default_factory=dict)  # YYYY-MM-DD → count
+    daily_counts: Dict[str, int] = Field(default_factory=dict)
+    attention_shift: List[AttentionPeriod] = Field(default_factory=list)
+    narrative_elasticity: List[CampElasticity] = Field(default_factory=list)

@@ -70,10 +70,25 @@ export interface CampFirstSeen {
   lag_hours: number
 }
 
+export interface AttentionPeriod {
+  label: string
+  themes: Record<string, number>
+}
+
+export interface CampElasticity {
+  bias_tag: string
+  early_stance: string
+  late_stance: string
+  shifted: boolean
+  shift_description: string | null
+}
+
 export interface WeeklyExtras {
   story_arc: NarrativeNode[]
   camp_first_seen: CampFirstSeen[]
   daily_counts: Record<string, number>
+  attention_shift: AttentionPeriod[]
+  narrative_elasticity: CampElasticity[]
 }
 
 export interface AnalysisResult {

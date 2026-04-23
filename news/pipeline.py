@@ -22,15 +22,19 @@ from .config import AppConfig
 from .ingest import fetch_all
 from .llm import LLMProvider, get_provider
 from .llm.prompts import (
+    build_attention_shift_prompt,
     build_cross_reference_prompt,
     build_entity_tracking_prompt,
     build_fact_extraction_prompt,
+    build_narrative_elasticity_prompt,
     build_synonym_expansion_prompt,
     build_weekly_story_arc_prompt,
 )
 from .models import (
     Article,
     ArticleFacts,
+    AttentionPeriod,
+    CampElasticity,
     CampFirstSeen,
     CrossReferenceResult,
     Divergence,
@@ -267,6 +271,97 @@ def weekly_story_arc(
     return nodes
 
 
+def compute_attention_shift(
+    provider: LLMProvider,
+    topic: str,
+    facts_bundle: List[ArticleFacts],
+) -> List[AttentionPeriod]:
+    """LLM call: thematic focus per time period — produces Sankey source data."""
+    log.info("attention-shift over %d fact bundles…", len(facts_bundle))
+    system, user = build_attention_shift_prompt(topic, facts_bundle)
+    try:
+        raw = provider.complete(system, user, json_mode=True, max_tokens=1500)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("attention_shift provider call failed: %s", exc)
+        return []
+    data = _safe_json(raw) or {}
+    periods = []
+    for p in data.get("periods", []):
+        try:
+            periods.append(AttentionPeriod(**p))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("  attention period schema mismatch: %s | %s", exc, p)
+    return periods
+
+
+def compute_narrative_elasticity(
+    provider: LLMProvider,
+    topic: str,
+    facts_bundle: List[ArticleFacts],
+) -> List[CampElasticity]:
+    """Compare early-week vs late-week framing per camp (parallel LLM calls)."""
+    from datetime import timezone, timedelta
+    sgt = timezone(timedelta(hours=8))
+
+    # Split bundle by date median
+    dated = sorted(
+        [f for f in facts_bundle if f.published_at],
+        key=lambda f: f.published_at,  # type: ignore[arg-type]
+    )
+    if len(dated) < 4:
+        return []
+
+    mid = len(dated) // 2
+    early_all = dated[:mid]
+    late_all = dated[mid:]
+
+    # Group by camp
+    from collections import defaultdict
+    early_by_camp: dict[str, list] = defaultdict(list)
+    late_by_camp: dict[str, list] = defaultdict(list)
+    for f in early_all:
+        early_by_camp[f.bias_tag].append(f)
+    for f in late_all:
+        late_by_camp[f.bias_tag].append(f)
+
+    # Only analyse camps present in BOTH halves with 2+ articles each
+    camps = [
+        c for c in early_by_camp
+        if c in late_by_camp and len(early_by_camp[c]) >= 2 and len(late_by_camp[c]) >= 2
+    ]
+    if not camps:
+        return []
+
+    results = []
+
+    def _analyse_camp(bias_tag: str) -> CampElasticity | None:
+        system, user = build_narrative_elasticity_prompt(
+            topic, bias_tag, early_by_camp[bias_tag], late_by_camp[bias_tag]
+        )
+        try:
+            raw = provider.complete(system, user, json_mode=True, max_tokens=512)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("narrative_elasticity failed for %s: %s", bias_tag, exc)
+            return None
+        data = _safe_json(raw) or {}
+        try:
+            return CampElasticity(bias_tag=bias_tag, **data)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("  elasticity schema mismatch for %s: %s", bias_tag, exc)
+            return None
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = {pool.submit(_analyse_camp, c): c for c in camps}
+        for future in as_completed(futures):
+            result = future.result()
+            if result:
+                results.append(result)
+
+    # Sort: shifted camps first, then by bias_tag
+    results.sort(key=lambda e: (not e.shifted, e.bias_tag))
+    return results
+
+
 def build_weekly_extras(
     provider: LLMProvider,
     topic: str,
@@ -277,6 +372,8 @@ def build_weekly_extras(
         story_arc=weekly_story_arc(provider, topic, facts_bundle),
         camp_first_seen=compute_info_lag(facts_bundle),
         daily_counts=compute_daily_counts(facts_bundle),
+        attention_shift=compute_attention_shift(provider, topic, facts_bundle),
+        narrative_elasticity=compute_narrative_elasticity(provider, topic, facts_bundle),
     )
 
 

@@ -195,6 +195,122 @@ def build_synonym_expansion_prompt(keyword: str) -> tuple[str, str]:
     return SYNONYM_EXPANSION_SYSTEM, SYNONYM_EXPANSION_USER_TEMPLATE.format(keyword=keyword)
 
 
+# ─── Phase 7b: Attention Shift (Sankey data) ─────────────────────────────────
+
+ATTENTION_SHIFT_SYSTEM = """\
+You are a thematic media analyst. Given fact extractions from articles spanning
+~7 days, determine how the THEMATIC FOCUS of reporting shifted over time.
+
+Split articles into 2-3 natural time periods based on when coverage pivoted.
+For each period, count how many articles primarily focused on each theme.
+
+FIXED THEME TAXONOMY (use exactly these labels, in Chinese):
+  军事行动  外交斡旋  经济制裁  人道主义  政治局势  法律司法  其他
+
+RULES:
+1. Each article belongs to its SINGLE most dominant theme for that period.
+2. Only include themes that have at least 1 article in a given period.
+3. Period labels must be date ranges like "4月16–18日".
+4. If all articles fall within 1-2 days, return just 1 period.
+5. Simplified Chinese. Strict JSON. No fences, no prose.
+"""
+
+ATTENTION_SHIFT_USER_TEMPLATE = """\
+TOPIC: {topic}
+ARTICLES BY DATE:
+{articles_block}
+
+Return JSON:
+{{
+  "periods": [
+    {{
+      "label": string,
+      "themes": {{ "<theme>": count, ... }}
+    }}
+  ]
+}}
+"""
+
+
+def build_attention_shift_prompt(topic: str, facts_bundle: list) -> tuple[str, str]:
+    sorted_bundle = sorted(
+        facts_bundle,
+        key=lambda f: f.published_at or __import__("datetime").datetime.min.replace(
+            tzinfo=__import__("datetime").timezone.utc
+        ),
+    )
+    blocks = []
+    for f in sorted_bundle:
+        date_str = f.published_at.strftime("%Y-%m-%d") if getattr(f, "published_at", None) else "未知"
+        blocks.append(
+            f"{date_str} | {f.bias_tag} | {f.title}\n"
+            f"  action: {f.facts.action or ''}"
+        )
+    user = ATTENTION_SHIFT_USER_TEMPLATE.format(
+        topic=topic,
+        articles_block="\n".join(blocks),
+    )
+    return ATTENTION_SHIFT_SYSTEM, user
+
+
+# ─── Phase 7c: Narrative Elasticity ──────────────────────────────────────────
+
+NARRATIVE_ELASTICITY_SYSTEM = """\
+You are a geopolitical narrative analyst. You receive articles from a single
+bias camp split into two halves of the week (early vs late). Your job is to
+assess whether the camp SHIFTED its narrative framing across the week.
+
+RULES:
+1. Summarize early_stance and late_stance in one concise sentence each.
+   Focus on the DOMINANT frame, not individual facts.
+2. shifted = true only if the CORE framing changed, not just new facts added.
+   Example of shift: "conflict" → "diplomatic negotiation".
+   Example of NOT a shift: new casualty numbers in same "conflict" frame.
+3. shift_description: if shifted, explain WHY in one sentence (new evidence,
+   external pressure, strategic interest). null if not shifted.
+4. Only analyse camps that have 2+ articles in BOTH halves.
+5. Simplified Chinese. Strict JSON. No fences.
+"""
+
+NARRATIVE_ELASTICITY_USER_TEMPLATE = """\
+TOPIC: {topic}
+
+CAMP: {bias_tag}
+
+EARLY articles (first half of week):
+{early_block}
+
+LATE articles (second half of week):
+{late_block}
+
+Return JSON:
+{{
+  "early_stance": string,
+  "late_stance": string,
+  "shifted": boolean,
+  "shift_description": string or null
+}}
+"""
+
+
+def build_narrative_elasticity_prompt(
+    topic: str, bias_tag: str, early: list, late: list
+) -> tuple[str, str]:
+    def fmt(bundle):
+        return "\n".join(
+            f"- {f.title}: {f.facts.action or f.facts.context or ''}"
+            for f in bundle
+        )
+
+    user = NARRATIVE_ELASTICITY_USER_TEMPLATE.format(
+        topic=topic,
+        bias_tag=bias_tag,
+        early_block=fmt(early),
+        late_block=fmt(late),
+    )
+    return NARRATIVE_ELASTICITY_SYSTEM, user
+
+
 # ─── Phase 3: Entity Tracking ────────────────────────────────────────────────
 
 ENTITY_TRACKING_SYSTEM = """\
