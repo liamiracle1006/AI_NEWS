@@ -425,18 +425,9 @@ async def get_map_articles(country: str, date: str | None = None, week: bool = F
     def in_title(a) -> bool:
         return any(n in (a.title or "").lower() for n in needles)
 
-    def in_summary(a) -> bool:
-        return any(n in (a.summary or "").lower() for n in needles)
-
-    # Title-first: if enough title matches exist, skip summary-only articles
-    # (prevents articles that merely mention the country in passing from appearing).
-    title_hits = [a for a in articles if in_title(a)]
-    if len(title_hits) >= 3:
-        hits = title_hits
-    else:
-        seen = {a.url for a in title_hits}
-        summary_hits = [a for a in articles if a.url not in seen and in_summary(a)]
-        hits = title_hits + summary_hits
+    # Title-only: no summary fallback. Summary fallback pulls SCMP/other articles
+    # that mention the country in a single sentence unrelated to the main story.
+    hits = [a for a in articles if in_title(a)]
 
     _MIN_DT = datetime.min.replace(tzinfo=timezone.utc)
     hits.sort(key=lambda a: a.published_at or _MIN_DT, reverse=True)

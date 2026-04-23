@@ -1,5 +1,6 @@
 import type { AnalysisResult } from '../types'
 import { campLabel } from '../types'
+import { ArticleDigestList } from './ArticleDigestList'
 import { ConsensusSection } from './ConsensusSection'
 import { DivergenceCard } from './DivergenceCard'
 import { EntityCard } from './EntityCard'
@@ -55,6 +56,8 @@ export function ResultView({ result }: Props) {
           </div>
         </section>
       )}
+
+      <ArticleDigestList facts={result.facts_bundle} />
 
       <SourceList sources={cross.sources_covered} />
 

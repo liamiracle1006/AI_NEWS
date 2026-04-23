@@ -89,9 +89,9 @@ export function RegionPanel({ countryName, countryZh, heatCount, open, onClose, 
             )}
           </div>
 
-          {heatCount > 0 && (
+          {!loading && (
             <p className="text-xs text-gray-400 mt-1.5">
-              {dateLabel} RSS 命中 <span className="font-medium text-gray-600">{heatCount}</span> 篇相关报道
+              {dateLabel} RSS 命中 <span className="font-medium text-gray-600">{articles.length}</span> 篇相关报道
             </p>
           )}
         </div>

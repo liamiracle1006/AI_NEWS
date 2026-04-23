@@ -45,6 +45,11 @@ BODY:
 {body}
 \"\"\"
 
+CRITICAL: Every string value in your JSON output MUST be written in Simplified
+Chinese (简体中文), even if the article above is entirely in English.
+Translate all extracted text to Chinese. Only keep proper nouns (names, places)
+in their original script when no standard Chinese form exists.
+
 Return JSON matching exactly this schema:
 {{
   "when":   string or null,
@@ -335,6 +340,11 @@ RULES:
 7. Output Simplified Chinese for all text fields. Proper nouns may retain
    original script if no common Chinese equivalent exists.
 8. Output strict JSON per the user schema. No prose, no fences.
+9. QUALITY OVER QUANTITY: only include entities mentioned substantively in
+   2 or more articles. Single passing mentions are noise — omit them.
+10. per_source_framing MUST show genuine wording differences between camps.
+    If all camps describe the person identically, omit per_source_framing
+    entirely (set to empty object {}).
 """
 
 ENTITY_TRACKING_USER_TEMPLATE = """\
@@ -455,6 +465,8 @@ def build_entity_tracking_prompt(topic: str, facts_bundle: list) -> tuple[str, s
             f"    url: {f.article_url}\n"
             f"    who: {json.dumps(f.facts.who, ensure_ascii=False)}\n"
             f"    action: {f.facts.action or 'null'}\n"
+            f"    context: {f.facts.context or 'null'}\n"
+            f"    key_quotes: {json.dumps(f.facts.key_quotes, ensure_ascii=False)}\n"
             f"    claims: {json.dumps(f.facts.source_claims_verbatim, ensure_ascii=False)}"
         )
         blocks.append(block)
