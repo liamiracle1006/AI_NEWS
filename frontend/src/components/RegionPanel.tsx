@@ -10,7 +10,7 @@ interface Props {
   open: boolean
   onClose: () => void
   selectedDate?: string
-  onAnalyze?: (keyword: string, weekMode?: boolean) => void
+  onAnalyze?: (keyword: string, weekMode: boolean, analyzeDate?: string) => void
 }
 
 export function RegionPanel({ countryName, countryZh, heatCount, open, onClose, selectedDate, onAnalyze }: Props) {
@@ -74,10 +74,14 @@ export function RegionPanel({ countryName, countryZh, heatCount, open, onClose, 
               </button>
             </div>
 
-            {/* Analyze button — always uses today's cache regardless of map date */}
+            {/* Analyze button — passes the current view's date scope */}
             {onAnalyze && (
               <button
-                onClick={() => { onClose(); onAnalyze(countryName, viewMode === 'week') }}
+                onClick={() => {
+                  onClose()
+                  const isWeek = viewMode === 'week'
+                  onAnalyze(countryName, isWeek, isWeek ? undefined : selectedDate)
+                }}
                 className="text-xs px-2.5 py-1 rounded bg-blue-600 text-white hover:bg-blue-700 transition-colors whitespace-nowrap"
               >
                 {viewMode === 'week' ? '本周深度分析' : '深度分析'}

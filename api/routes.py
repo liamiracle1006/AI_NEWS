@@ -40,7 +40,8 @@ class AnalyzeRequest(BaseModel):
     max_articles: int = 10
     track_people: bool = True
     auto_synonyms: bool = True
-    week_mode: bool = False  # use full 7-day cache for cross-week trend analysis
+    week_mode: bool = False       # use full 7-day cache for cross-week trend analysis
+    analyze_date: str | None = None  # YYYY-MM-DD; if set + not week_mode, filter to that publish date
 
 
 class AnalyzeResponse(BaseModel):
@@ -70,16 +71,19 @@ async def _run_analysis(job_id: str, req: AnalyzeRequest, expanded_keyword: str)
     try:
         cfg = await loop.run_in_executor(None, load_config)
 
-        # Use today's cache (contains past 7 days); week_mode keeps all 7 days, normal mode uses today's only
         status = cache_status()
         if req.week_mode:
             emit("fetching", f"读取近 7 天缓存（{status.get('article_count', '?')} 篇文章）进行本周综合分析...")
+            articles = await loop.run_in_executor(None, lambda: load_or_fetch(cfg))
+        elif req.analyze_date:
+            emit("fetching", f"读取 {req.analyze_date} 的文章进行分析...")
+            articles = await _load_articles_for_date(req.analyze_date, loop)
         elif status["has_today"]:
             emit("fetching", f"读取今日缓存（{status['article_count']} 篇文章）...")
+            articles = await loop.run_in_executor(None, lambda: load_or_fetch(cfg))
         else:
             emit("fetching", "首次运行：正在抓取 RSS 源并建立今日缓存...")
-
-        articles = await loop.run_in_executor(None, lambda: load_or_fetch(cfg))
+            articles = await loop.run_in_executor(None, lambda: load_or_fetch(cfg))
 
         hits = filter_by_keyword(articles, expanded_keyword)
         if not hits:
@@ -309,10 +313,17 @@ def _build_heat_for(articles) -> dict[str, int]:
 
 
 def _filter_by_published_date(articles: list, date_str: str) -> list:
-    """Keep only articles whose published_at falls on the given date."""
-    from datetime import date as _date
+    """Keep articles whose published_at falls on date_str in UTC+8 (Singapore/HK time).
+
+    RSS timestamps are stored as UTC. Converting to UTC+8 before comparing ensures
+    that e.g. an article published at 01:00 SGT (= 4/22 17:00 UTC) appears under
+    the correct local calendar date.
+    """
+    from datetime import date as _date, timezone, timedelta
     target = _date.fromisoformat(date_str)
-    return [a for a in articles if a.published_at and a.published_at.date() == target]
+    sgt = timezone(timedelta(hours=8))
+    return [a for a in articles
+            if a.published_at and a.published_at.astimezone(sgt).date() == target]
 
 
 async def _load_all_recent(loop) -> list:
@@ -322,13 +333,14 @@ async def _load_all_recent(loop) -> list:
 
 
 async def _load_articles_for_date(date_str: str, loop) -> list:
-    """Return articles whose published_at falls on date_str.
+    """Return articles whose published_at falls on date_str (compared in UTC+8).
 
     Uses today's 7-day cache as source (most complete) for recent dates,
     falling back to the historical cache file for older dates.
     """
-    from datetime import date as _date
-    today_str = _date.today().isoformat()
+    from datetime import date as _date, timezone, timedelta
+    sgt = timezone(timedelta(hours=8))
+    today_str = datetime.now(tz=sgt).date().isoformat()
     today = _date.fromisoformat(today_str)
     days_ago = (today - _date.fromisoformat(date_str)).days
 
@@ -347,10 +359,12 @@ async def get_map_heat(date: str | None = None):
     """Return per-country article mention counts for a given date (default: today).
 
     Today's result refreshes every 10 min. Historical dates are cached in memory.
+    Dates are interpreted in UTC+8 (Singapore/HK time).
     """
-    from datetime import date as _date
+    from datetime import timezone, timedelta
     loop = asyncio.get_running_loop()
-    today_str = _date.today().isoformat()
+    sgt = timezone(timedelta(hours=8))
+    today_str = datetime.now(tz=sgt).date().isoformat()
     key = date or today_str
     now = time.time()
 
@@ -374,10 +388,10 @@ async def get_map_articles(country: str, date: str | None = None, week: bool = F
     """Return cached articles for a country.
 
     - week=true: all articles from the 7-day rolling cache (ignores date param)
-    - date=YYYY-MM-DD: articles published on that specific date
-    - default (no params): articles published today
+    - date=YYYY-MM-DD: articles published on that specific date (UTC+8)
+    - default (no params): articles published today (UTC+8)
     """
-    from datetime import date as _date, timezone
+    from datetime import timezone, timedelta
     loop = asyncio.get_running_loop()
     keywords = GEO_KEYWORDS.get(country, [])
     if not keywords:
@@ -386,7 +400,8 @@ async def get_map_articles(country: str, date: str | None = None, week: bool = F
     if week:
         articles = await _load_all_recent(loop)
     else:
-        today_str = _date.today().isoformat()
+        sgt = timezone(timedelta(hours=8))
+        today_str = datetime.now(tz=sgt).date().isoformat()
         key = date or today_str
         articles = await _load_articles_for_date(key, loop)
 

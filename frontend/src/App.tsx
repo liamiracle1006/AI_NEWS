@@ -54,7 +54,7 @@ export default function App() {
     return () => clearInterval(timer)
   }, [selectedDate])
 
-  const handleAnalyze = async (keyword: string, maxArticles: number, trackPeople: boolean, weekMode = false) => {
+  const handleAnalyze = async (keyword: string, maxArticles: number, trackPeople: boolean, weekMode = false, analyzeDate?: string) => {
     setLoading(true)
     setEvents([])
     setResult(null)
@@ -62,7 +62,7 @@ export default function App() {
     setExpandedKeyword(null)
 
     try {
-      const { jobId, expandedKeyword: expanded } = await startAnalyze(keyword, maxArticles, trackPeople, weekMode)
+      const { jobId, expandedKeyword: expanded } = await startAnalyze(keyword, maxArticles, trackPeople, weekMode, analyzeDate)
       setExpandedKeyword(expanded)
 
       let failed = false
@@ -130,9 +130,9 @@ export default function App() {
         open={selectedCountry !== null}
         onClose={() => setSelectedCountry(null)}
         selectedDate={selectedDate}
-        onAnalyze={(keyword, weekMode) => {
+        onAnalyze={(keyword, weekMode, analyzeDate) => {
           setSelectedCountry(null)
-          handleAnalyze(keyword, 30, true, weekMode)
+          handleAnalyze(keyword, 30, true, weekMode, analyzeDate)
           setTimeout(() => {
             document.querySelector('main')?.scrollTo({ top: 400, behavior: 'smooth' })
             window.scrollTo({ top: 400, behavior: 'smooth' })
