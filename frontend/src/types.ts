@@ -14,6 +14,7 @@ export interface ArticleFacts {
   source_name: string
   bias_tag: string
   title: string
+  published_at?: string | null
   facts: ExtractedFact
 }
 
@@ -55,10 +56,31 @@ export interface EntityTrackingResult {
   entities: EntityEvent[]
 }
 
+export interface NarrativeNode {
+  date_range: string
+  main_event: string
+  camp_reactions: Record<string, string>
+  significance: string | null
+}
+
+export interface CampFirstSeen {
+  bias_tag: string
+  source_name: string
+  first_date: string
+  lag_hours: number
+}
+
+export interface WeeklyExtras {
+  story_arc: NarrativeNode[]
+  camp_first_seen: CampFirstSeen[]
+  daily_counts: Record<string, number>
+}
+
 export interface AnalysisResult {
   facts_bundle: ArticleFacts[]
   cross: CrossReferenceResult
   entities: EntityTrackingResult | null
+  weekly?: WeeklyExtras | null
 }
 
 export interface BriefMeta {

@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 from news.config import load_config
 from news.llm import get_provider
-from news.pipeline import expand_keyword, extract_facts_batch, cross_reference, track_entities
+from news.pipeline import expand_keyword, extract_facts_batch, cross_reference, track_entities, build_weekly_extras
 from news.ingest import fetch_all
 from news.cluster import filter_by_keyword
 from news.output import render_markdown, write_brief
@@ -151,10 +151,18 @@ async def _run_analysis(job_id: str, req: AnalyzeRequest, expanded_keyword: str)
                 None, lambda: track_entities(provider, expanded_keyword, facts_bundle)
             )
 
+        weekly = None
+        if req.week_mode and facts_bundle:
+            emit("extracting", "正在进行周度叙事弧分析...")
+            weekly = await loop.run_in_executor(
+                None, lambda: build_weekly_extras(provider, expanded_keyword, facts_bundle)
+            )
+
         result = {
             "facts_bundle": [f.model_dump(mode="json") for f in facts_bundle],
             "cross": cross.model_dump(mode="json"),
             "entities": entities.model_dump(mode="json") if entities else None,
+            "weekly": weekly.model_dump(mode="json") if weekly else None,
         }
         job["result"] = result
 

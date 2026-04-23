@@ -5,6 +5,7 @@ import { DivergenceCard } from './DivergenceCard'
 import { EntityCard } from './EntityCard'
 import { GapSection } from './GapSection'
 import { SourceList } from './SourceList'
+import { WeeklyView } from './WeeklyView'
 
 interface Props {
   result: AnalysisResult
@@ -56,6 +57,10 @@ export function ResultView({ result }: Props) {
       )}
 
       <SourceList sources={cross.sources_covered} />
+
+      {result.weekly && (
+        <WeeklyView weekly={result.weekly} />
+      )}
     </div>
   )
 }

@@ -96,3 +96,28 @@ class EntityTrackingResult(BaseModel):
     topic: str
     generated_at: datetime
     entities: List[EntityEvent] = Field(default_factory=list)
+
+
+# ── Phase 7: Weekly-exclusive analysis models ─────────────────────────────────
+
+class NarrativeNode(BaseModel):
+    """One chapter in the weekly story arc."""
+    date_range: str                          # e.g. "4月16–18日"
+    main_event: str                          # What shifted in this phase
+    camp_reactions: Dict[str, str] = Field(default_factory=dict)  # bias_tag → framing
+    significance: Optional[str] = None      # Why this phase matters
+
+
+class CampFirstSeen(BaseModel):
+    """When a bias camp first reported on a topic during the week."""
+    bias_tag: str
+    source_name: str
+    first_date: str                          # YYYY-MM-DD in UTC+8
+    lag_hours: float                         # Hours after the globally-earliest camp
+
+
+class WeeklyExtras(BaseModel):
+    """Additional temporal analysis produced only in week_mode."""
+    story_arc: List[NarrativeNode] = Field(default_factory=list)
+    camp_first_seen: List[CampFirstSeen] = Field(default_factory=list)
+    daily_counts: Dict[str, int] = Field(default_factory=dict)  # YYYY-MM-DD → count

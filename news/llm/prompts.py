@@ -247,6 +247,88 @@ Return JSON matching exactly this schema:
 """
 
 
+# ─── Phase 7: Weekly Story Arc ───────────────────────────────────────────────
+
+WEEKLY_STORY_ARC_SYSTEM = """\
+You are a geopolitical narrative analyst specializing in temporal analysis.
+Given fact extractions from multiple articles spanning ~7 days about a topic,
+construct a chronological narrative arc: how did the story evolve?
+
+RULES:
+1. Group articles into 3-5 natural PHASES based on when the story shifted —
+   not mechanical day-by-day. A phase is defined by a new development that
+   changed the situation or the narrative.
+2. For each phase:
+   - date_range: the dates covered (e.g. "4月16–18日")
+   - main_event: 1-2 sentences on what the key development was
+   - camp_reactions: how 2-4 of the most present bias camps framed this phase
+     (flowing prose, 1-2 sentences each)
+   - significance: one sentence on why this phase matters for the overall story
+3. Note when a camp notably CHANGED its framing between phases — that is
+   analytically valuable.
+4. If articles span only 1-2 days, output 1-2 phases max. Do not invent phases.
+5. Output Simplified Chinese. Strict JSON. No fences, no prose.
+"""
+
+WEEKLY_STORY_ARC_USER_TEMPLATE = """\
+TOPIC: {topic}
+ARTICLES: {n_articles} total · Date range: {date_range}
+
+Articles sorted by publication date (oldest first):
+{articles_block}
+
+Return JSON matching exactly:
+{{
+  "nodes": [
+    {{
+      "date_range": string,
+      "main_event": string,
+      "camp_reactions": {{ "<bias_tag>": string, ... }},
+      "significance": string or null
+    }}
+  ]
+}}
+"""
+
+
+def build_weekly_story_arc_prompt(topic: str, facts_bundle: list) -> tuple[str, str]:
+    """Build (system, user) for the weekly narrative arc pass."""
+    # Sort by published_at ascending (oldest first)
+    sorted_bundle = sorted(
+        facts_bundle,
+        key=lambda f: f.published_at or __import__("datetime").datetime.min.replace(
+            tzinfo=__import__("datetime").timezone.utc
+        ),
+    )
+
+    blocks = []
+    for i, f in enumerate(sorted_bundle, 1):
+        date_str = f.published_at.strftime("%Y-%m-%d") if getattr(f, "published_at", None) else "日期未知"
+        block = (
+            f"[{i}] {date_str} | bias={f.bias_tag} | source={f.source_name}\n"
+            f"    title: {f.title}\n"
+            f"    action: {f.facts.action or 'null'}\n"
+            f"    context: {f.facts.context or 'null'}"
+        )
+        blocks.append(block)
+
+    dates = [f.published_at for f in facts_bundle if getattr(f, "published_at", None)]
+    if dates:
+        lo = min(dates).strftime("%m月%d日")
+        hi = max(dates).strftime("%m月%d日")
+        date_range = f"{lo} – {hi}" if lo != hi else lo
+    else:
+        date_range = "未知"
+
+    user = WEEKLY_STORY_ARC_USER_TEMPLATE.format(
+        topic=topic,
+        n_articles=len(facts_bundle),
+        date_range=date_range,
+        articles_block="\n\n".join(blocks),
+    )
+    return WEEKLY_STORY_ARC_SYSTEM, user
+
+
 def build_entity_tracking_prompt(topic: str, facts_bundle: list) -> tuple[str, str]:
     """Build (system, user) for the entity tracking pass."""
     blocks = []

@@ -26,16 +26,20 @@ from .llm.prompts import (
     build_entity_tracking_prompt,
     build_fact_extraction_prompt,
     build_synonym_expansion_prompt,
+    build_weekly_story_arc_prompt,
 )
 from .models import (
     Article,
     ArticleFacts,
+    CampFirstSeen,
     CrossReferenceResult,
     Divergence,
     EntityEvent,
     EntityTrackingResult,
     ExtractedFact,
+    NarrativeNode,
     SourceRef,
+    WeeklyExtras,
 )
 
 log = logging.getLogger(__name__)
@@ -187,6 +191,92 @@ def track_entities(
         topic=topic,
         generated_at=datetime.now(tz=timezone.utc),
         entities=entities,
+    )
+
+
+def compute_info_lag(facts_bundle: List[ArticleFacts]) -> List[CampFirstSeen]:
+    """Return per-camp first-seen dates, sorted by arrival time.
+
+    Compares when each bias camp first published on this topic during the week.
+    Lag is measured in hours relative to the earliest-reporting camp.
+    Pure computation — no LLM call.
+    """
+    from datetime import timezone, timedelta
+    sgt = timezone(timedelta(hours=8))
+
+    # Find the earliest published_at per camp (in UTC+8)
+    camp_min: dict[str, datetime] = {}
+    camp_source: dict[str, str] = {}
+    for f in facts_bundle:
+        if not f.published_at:
+            continue
+        dt = f.published_at.astimezone(sgt)
+        if f.bias_tag not in camp_min or dt < camp_min[f.bias_tag]:
+            camp_min[f.bias_tag] = dt
+            camp_source[f.bias_tag] = f.source_name
+
+    if not camp_min:
+        return []
+
+    global_first = min(camp_min.values())
+
+    return [
+        CampFirstSeen(
+            bias_tag=bias_tag,
+            source_name=camp_source[bias_tag],
+            first_date=first_dt.strftime("%Y-%m-%d"),
+            lag_hours=round((first_dt - global_first).total_seconds() / 3600, 1),
+        )
+        for bias_tag, first_dt in sorted(camp_min.items(), key=lambda x: x[1])
+    ]
+
+
+def compute_daily_counts(facts_bundle: List[ArticleFacts]) -> dict[str, int]:
+    """Count articles per calendar day (UTC+8) for the coverage momentum chart."""
+    from collections import Counter
+    from datetime import timezone, timedelta
+    sgt = timezone(timedelta(hours=8))
+    counts: Counter[str] = Counter()
+    for f in facts_bundle:
+        if f.published_at:
+            day = f.published_at.astimezone(sgt).date().isoformat()
+            counts[day] += 1
+    return dict(sorted(counts.items()))
+
+
+def weekly_story_arc(
+    provider: LLMProvider,
+    topic: str,
+    facts_bundle: List[ArticleFacts],
+) -> List[NarrativeNode]:
+    """LLM call: construct a chronological narrative arc from a week's articles."""
+    log.info("weekly-story-arc over %d fact bundles…", len(facts_bundle))
+    system, user = build_weekly_story_arc_prompt(topic, facts_bundle)
+    try:
+        raw = provider.complete(system, user, json_mode=True, max_tokens=3000)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("weekly_story_arc provider call failed: %s", exc)
+        return []
+    data = _safe_json(raw) or {}
+    nodes = []
+    for n in data.get("nodes", []):
+        try:
+            nodes.append(NarrativeNode(**n))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("  narrative node schema mismatch: %s | %s", exc, n)
+    return nodes
+
+
+def build_weekly_extras(
+    provider: LLMProvider,
+    topic: str,
+    facts_bundle: List[ArticleFacts],
+) -> WeeklyExtras:
+    """Assemble all week-exclusive analysis modules."""
+    return WeeklyExtras(
+        story_arc=weekly_story_arc(provider, topic, facts_bundle),
+        camp_first_seen=compute_info_lag(facts_bundle),
+        daily_counts=compute_daily_counts(facts_bundle),
     )
 
 
