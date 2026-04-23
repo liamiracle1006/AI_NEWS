@@ -106,10 +106,13 @@ async def _run_analysis(job_id: str, req: AnalyzeRequest, expanded_keyword: str)
                 article.body = _extract_body(article.url)
                 return article
 
-            await loop.run_in_executor(
-                None,
-                lambda: list(concurrent.futures.ThreadPoolExecutor(max_workers=8).map(_fetch_body, needs_body)),
-            )
+            def _fetch_all_bodies():
+                with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+                    futs = [ex.submit(_fetch_body, a) for a in needs_body]
+                    # 30s total wall-clock timeout; hangers keep body=None (summary used instead)
+                    concurrent.futures.wait(futs, timeout=30)
+
+            await loop.run_in_executor(None, _fetch_all_bodies)
 
         emit("extracting", f"命中 {total} 篇，开始并行提取事实...")
 

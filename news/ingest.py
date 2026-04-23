@@ -33,9 +33,9 @@ def _entry_time(entry) -> datetime | None:
     return None
 
 
-def _extract_body(url: str) -> str | None:
+def _extract_body(url: str, timeout: int = 15) -> str | None:
     try:
-        downloaded = trafilatura.fetch_url(url)
+        downloaded = trafilatura.fetch_url(url, config=_trafilatura_config(timeout))
         if not downloaded:
             return None
         return trafilatura.extract(
@@ -46,6 +46,16 @@ def _extract_body(url: str) -> str | None:
         )
     except Exception as exc:  # noqa: BLE001
         log.warning("body extraction failed for %s: %s", url, exc)
+        return None
+
+
+def _trafilatura_config(timeout: int):
+    try:
+        from trafilatura.settings import use_config
+        cfg = use_config()
+        cfg.set("DEFAULT", "DOWNLOAD_TIMEOUT", str(timeout))
+        return cfg
+    except Exception:
         return None
 
 
