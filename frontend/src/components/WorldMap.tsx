@@ -7,20 +7,19 @@ import {
 
 const GEO_URL = '/world-110m.json'
 
-// These polygons share color + click target with another country.
-// Taiwan → China: same color, clicking opens China panel labeled "中国台湾".
+// Maps TopoJSON polygon names to the geo_keywords key used for heat data + article fetch.
+// Taiwan variants normalize to 'Taiwan' (its own bucket), NOT 'China'.
 const REDIRECT: Record<string, string> = {
-  'Taiwan': 'China',
-  'Taiwan, Province of China': 'China',
-  'Republic of China': 'China',
+  'Taiwan, Province of China': 'Taiwan',
+  'Republic of China': 'Taiwan',
   'N. Cyprus': 'Cyprus',
   'Northern Cyprus': 'Cyprus',
   // Singapore too small for 110m; routes to Malaysia
   'Singapore': 'Malaysia',
 }
 
-// Chinese display names — raw polygon names checked first so Taiwan → 中国台湾
-// before falling back to the redirected name (China → 中国).
+// Chinese display names shown in tooltip and panel header.
+// Taiwan variants all map to "中国台湾".
 const ZH_NAMES: Record<string, string> = {
   'Taiwan': '中国台湾',
   'Taiwan, Province of China': '中国台湾',

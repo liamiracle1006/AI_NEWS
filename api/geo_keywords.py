@@ -16,11 +16,15 @@ GEO_KEYWORDS: dict[str, list[str]] = {
     "China": [
         "China", "Chinese", "中国", "Beijing", "北京", "Shanghai", "上海",
         "Xi Jinping", "习近平", "PRC", "CCP", "中共",
-        # Taiwan → China
-        "Taiwan", "台湾", "Taipei", "台北", "TSMC", "台积电",
         # Tibet / Xinjiang → China
         "Tibet", "西藏", "Xinjiang", "新疆", "Uyghur", "维吾尔",
         "Hong Kong", "香港",
+    ],
+    # Taiwan is tracked separately so clicks open a Taiwan-specific article list.
+    # Display name on the map is "中国台湾" (handled in frontend ZH_NAMES).
+    "Taiwan": [
+        "Taiwan", "台湾", "Taipei", "台北", "TSMC", "台积电",
+        "Lai Ching-te", "赖清德", "DPP", "民进党", "ROC",
     ],
     "Japan": [
         "Japan", "Japanese", "日本", "Tokyo", "东京", "Osaka", "大阪",
