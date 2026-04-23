@@ -4,11 +4,12 @@ export async function startAnalyze(
   keyword: string,
   maxArticles: number,
   trackPeople: boolean,
+  weekMode = false,
 ): Promise<{ jobId: string; expandedKeyword: string }> {
   const res = await fetch('/api/analyze', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ keyword, max_articles: maxArticles, track_people: trackPeople, auto_synonyms: true }),
+    body: JSON.stringify({ keyword, max_articles: maxArticles, track_people: trackPeople, auto_synonyms: true, week_mode: weekMode }),
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))

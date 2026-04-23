@@ -1,7 +1,7 @@
 import { useState } from 'react'
 
 interface Props {
-  onSubmit: (keyword: string, maxArticles: number, trackPeople: boolean) => void
+  onSubmit: (keyword: string, maxArticles: number, trackPeople: boolean, weekMode: boolean) => void
   loading: boolean
 }
 
@@ -9,10 +9,11 @@ export function AnalyzeForm({ onSubmit, loading }: Props) {
   const [keyword, setKeyword] = useState('')
   const [maxArticles, setMaxArticles] = useState(30)
   const [trackPeople, setTrackPeople] = useState(true)
+  const [weekMode, setWeekMode] = useState(false)
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    if (keyword.trim()) onSubmit(keyword.trim(), maxArticles, trackPeople)
+    if (keyword.trim()) onSubmit(keyword.trim(), maxArticles, trackPeople, weekMode)
   }
 
   return (
@@ -31,7 +32,7 @@ export function AnalyzeForm({ onSubmit, loading }: Props) {
         />
       </div>
 
-      <div className="flex items-center gap-6">
+      <div className="flex items-center gap-6 flex-wrap">
         <div className="flex items-center gap-2">
           <label className="text-sm text-gray-600">最多文章数</label>
           <input
@@ -54,6 +55,20 @@ export function AnalyzeForm({ onSubmit, loading }: Props) {
             className="rounded"
           />
           追踪人物
+        </label>
+
+        <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={weekMode}
+            onChange={e => setWeekMode(e.target.checked)}
+            disabled={loading}
+            className="rounded"
+          />
+          <span>
+            本周综合
+            <span className="ml-1 text-xs text-gray-400">（近 7 天跨日趋势）</span>
+          </span>
         </label>
       </div>
 

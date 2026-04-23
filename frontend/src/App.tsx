@@ -54,7 +54,7 @@ export default function App() {
     return () => clearInterval(timer)
   }, [selectedDate])
 
-  const handleAnalyze = async (keyword: string, maxArticles: number, trackPeople: boolean) => {
+  const handleAnalyze = async (keyword: string, maxArticles: number, trackPeople: boolean, weekMode = false) => {
     setLoading(true)
     setEvents([])
     setResult(null)
@@ -62,7 +62,7 @@ export default function App() {
     setExpandedKeyword(null)
 
     try {
-      const { jobId, expandedKeyword: expanded } = await startAnalyze(keyword, maxArticles, trackPeople)
+      const { jobId, expandedKeyword: expanded } = await startAnalyze(keyword, maxArticles, trackPeople, weekMode)
       setExpandedKeyword(expanded)
 
       let failed = false

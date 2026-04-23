@@ -53,7 +53,7 @@ export function RegionPanel({ countryName, countryZh, heatCount, open, onClose, 
           <div className="flex items-center gap-2">
             {onAnalyze && isToday && (
               <button
-                onClick={() => { onClose(); onAnalyze(countryZh || countryName) }}
+                onClick={() => { onClose(); onAnalyze(countryName) }}
                 className="text-xs px-2.5 py-1 rounded bg-blue-600 text-white hover:bg-blue-700 transition-colors whitespace-nowrap"
               >
                 深度分析

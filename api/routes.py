@@ -40,6 +40,7 @@ class AnalyzeRequest(BaseModel):
     max_articles: int = 10
     track_people: bool = True
     auto_synonyms: bool = True
+    week_mode: bool = False  # use full 7-day cache for cross-week trend analysis
 
 
 class AnalyzeResponse(BaseModel):
@@ -69,9 +70,11 @@ async def _run_analysis(job_id: str, req: AnalyzeRequest, expanded_keyword: str)
     try:
         cfg = await loop.run_in_executor(None, load_config)
 
-        # Use today's cache if available; otherwise fetch live and save cache
+        # Use today's cache (contains past 7 days); week_mode keeps all 7 days, normal mode uses today's only
         status = cache_status()
-        if status["has_today"]:
+        if req.week_mode:
+            emit("fetching", f"读取近 7 天缓存（{status.get('article_count', '?')} 篇文章）进行本周综合分析...")
+        elif status["has_today"]:
             emit("fetching", f"读取今日缓存（{status['article_count']} 篇文章）...")
         else:
             emit("fetching", "首次运行：正在抓取 RSS 源并建立今日缓存...")
@@ -305,12 +308,43 @@ def _build_heat_for(articles) -> dict[str, int]:
     return counts
 
 
+def _filter_by_published_date(articles: list, date_str: str) -> list:
+    """Keep only articles whose published_at falls on the given date."""
+    from datetime import date as _date
+    target = _date.fromisoformat(date_str)
+    return [a for a in articles if a.published_at and a.published_at.date() == target]
+
+
+async def _load_articles_for_date(date_str: str, loop) -> list:
+    """Return the best available article list for a given date.
+
+    - Today: full 7-day rolling cache, unfiltered (today is still in progress).
+    - Within 7 days: today's cache filtered by published_at == date (most complete source).
+    - Older: that date's own cache file filtered by published_at == date.
+    """
+    from datetime import date as _date
+    today_str = _date.today().isoformat()
+    today = _date.fromisoformat(today_str)
+    days_ago = (today - _date.fromisoformat(date_str)).days
+
+    cfg = await loop.run_in_executor(None, load_config)
+
+    if date_str == today_str:
+        return await loop.run_in_executor(None, lambda: load_or_fetch(cfg))
+
+    if days_ago <= 7:
+        all_articles = await loop.run_in_executor(None, lambda: load_or_fetch(cfg))
+    else:
+        all_articles = await loop.run_in_executor(None, lambda: load_date(date_str) or [])
+
+    return _filter_by_published_date(all_articles, date_str)
+
+
 @router.get("/map/heat")
 async def get_map_heat(date: str | None = None):
     """Return per-country article mention counts for a given date (default: today).
 
-    Today's result is refreshed at most every 10 min.
-    Historical dates are loaded once and cached in memory indefinitely.
+    Today's result refreshes every 10 min. Historical dates are cached in memory.
     """
     from datetime import date as _date
     loop = asyncio.get_running_loop()
@@ -325,13 +359,7 @@ async def get_map_heat(date: str | None = None):
         if not is_today or (now - ts < _HEAT_TTL):
             return heat
 
-    # Build heat for the requested date
-    if key == today_str:
-        cfg = await loop.run_in_executor(None, load_config)
-        articles = await loop.run_in_executor(None, lambda: load_or_fetch(cfg))
-    else:
-        articles = await loop.run_in_executor(None, lambda: load_date(key) or [])
-
+    articles = await _load_articles_for_date(key, loop)
     heat = await loop.run_in_executor(None, lambda: _build_heat_for(articles))
     _heat_cache[key] = (heat, now)
     return heat
@@ -350,12 +378,7 @@ async def get_map_articles(country: str, date: str | None = None):
 
     today_str = _date.today().isoformat()
     key = date or today_str
-
-    if key == today_str:
-        cfg = await loop.run_in_executor(None, load_config)
-        articles = await loop.run_in_executor(None, lambda: load_or_fetch(cfg))
-    else:
-        articles = await loop.run_in_executor(None, lambda: load_date(key) or [])
+    articles = await _load_articles_for_date(key, loop)
 
     needles = [k.lower() for k in keywords]
 
