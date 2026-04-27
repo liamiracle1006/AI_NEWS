@@ -23,26 +23,38 @@ app.add_middleware(
 app.include_router(router, prefix="/api")
 
 
+REFRESH_INTERVAL_SECONDS = 3600  # 每小时自动刷新一次
+
+
 @app.on_event("startup")
-async def _startup_cache():
-    """Build today's article cache in the background if it doesn't exist yet."""
+async def _startup():
+    """启动时立即建缓存，然后每小时自动刷新。"""
+    asyncio.create_task(_auto_refresh_loop())
+
+
+async def _auto_refresh_loop():
     from news.article_cache import cache_status, fetch_and_cache
     from news.config import load_config
 
-    status = cache_status()
-    if status["has_today"]:
-        print(f"[cache] today's cache exists: {status['article_count']} articles, {status['age_minutes']:.0f} min old")
-        return
+    loop = asyncio.get_running_loop()
 
-    print("[cache] no cache for today — fetching RSS in background...")
+    while True:
+        status = cache_status()
+        age = status.get("age_minutes", 9999)
 
-    async def _build():
-        loop = asyncio.get_running_loop()
+        # 若缓存不足 55 分钟则跳过（避免刚启动就双重刷新）
+        if status["has_today"] and age < 55:
+            wait = (55 - age) * 60
+            print(f"[cache] 缓存 {age:.0f} 分钟前刷新过，{wait/60:.0f} 分钟后再刷新")
+            await asyncio.sleep(wait)
+            continue
+
+        print("[cache] 开始自动刷新 RSS 数据...")
         try:
             cfg = await loop.run_in_executor(None, load_config)
             articles = await loop.run_in_executor(None, lambda: fetch_and_cache(cfg))
-            print(f"[cache] startup cache complete: {len(articles)} articles")
+            print(f"[cache] 自动刷新完成：{len(articles)} 篇文章")
         except Exception as exc:  # noqa: BLE001
-            print(f"[cache] startup cache failed: {exc}")
+            print(f"[cache] 自动刷新失败：{exc}")
 
-    asyncio.create_task(_build())
+        await asyncio.sleep(REFRESH_INTERVAL_SECONDS)
