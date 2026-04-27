@@ -1,101 +1,180 @@
 # AI_NEWS — Multi-perspective Geopolitical News Analyzer
 
-A personal-use tool that pulls the same story from ideologically-opposed news sources,
-strips emotion/framing with an LLM, and surfaces the **consensus facts** vs. the
-**narrative disagreements** — so you can see past any single outlet's spin.
+A tool that pulls the same story from ideologically-opposed news sources, strips emotion and framing with an LLM, and surfaces **consensus facts** vs. **narrative disagreements** — so you can see past any single outlet's spin.
 
 > Positioning: this is a **narrative-spectrum analyzer**, not a truth oracle.
-> LLMs weren't at the scene. But they are excellent at comparing how five
-> different camps describe the same event and isolating what all of them concede.
+> LLMs weren't at the scene. But they are excellent at comparing how different camps describe the same event and isolating what all of them concede.
 
-## Roadmap
+---
 
-| Phase | Scope | Status |
-|---|---|---|
-| 1 | RSS ingestion + LLM provider abstraction + single-article fact extraction | done |
-| 2 | Keyword-driven clustering + cross-reference chain + Markdown brief | done |
-| 3 | Entity tracking (NER), optional Streamlit UI | planned |
-| 4 | SQLite history, power-figure timelines, relationship graph | optional |
+## Features
 
-## Quick start (Phase 1)
+### 🗺️ Interactive World Map
+- Global news heatmap — countries color-coded by article volume (green → red)
+- Click any country to open a side panel with today's or this week's relevant articles
+- Articles filtered by title match to avoid loosely related stories
+
+### 📊 Deep Analysis (per topic / country)
+Triggered on demand via the UI. Runs the full LLM pipeline:
+
+1. **Fact extraction** — per article: who, when, where, action, numbers, key quotes, context (all output in Simplified Chinese)
+2. **Cross-reference** — consensus facts, narrative divergences with per-camp framing, suspicious gaps
+3. **Entity tracking** — political figures mentioned across sources, with how each camp describes them
+4. **Article digest** — every source article shown individually with action summary, context, and expandable quotes
+
+### 📅 Weekly Analysis (7-day mode)
+Exclusive to week mode — goes beyond a daily snapshot:
+
+| Module | What it shows |
+|---|---|
+| 📈 Coverage momentum | Daily article count bar chart, peak day highlighted |
+| 🌊 Attention shift | Sankey diagram: how thematic focus shifted across time periods |
+| 🕰️ Story arc | Chronological narrative arc with per-camp reactions at each phase |
+| 🎯 Narrative elasticity | Did each camp quietly change its framing early vs. late in the week? |
+| ⏱️ Info lag | Which camp first reported the story; lag hours for others |
+
+### ⚡ Infrastructure
+- Hourly auto-refresh of RSS cache while backend is running
+- Article cache stored per day (`cache/articles_YYYY-MM-DD.json`) for historical browsing
+- LLM synonym expansion for multilingual keyword matching (`加沙|Gaza|하마스`)
+- SSE progress stream so the UI shows real-time extraction progress
+
+---
+
+## News Sources
+
+16 sources across the geopolitical spectrum:
+
+| Camp | Sources |
+|---|---|
+| Western wire | Reuters, AP (via NPR) |
+| UK | BBC World, The Guardian |
+| US liberal | NYT World, CNN |
+| US conservative | Fox News World |
+| Middle East | Al Jazeera, Mehr News, Press TV |
+| Hong Kong / Chinese-angle | SCMP (HK), SCMP (China) |
+| China state | CGTN, Global Times, China Daily |
+
+---
+
+## Project Layout
+
+```
+AI_NEWS/
+├── api/
+│   ├── main.py              FastAPI app entry point, hourly cache refresh loop
+│   ├── routes.py            All API routes
+│   └── geo_keywords.py      Country → keyword mapping for heatmap (~70 countries)
+├── news/
+│   ├── config.py            Env + sources.yaml loader
+│   ├── models.py            Pydantic models (Article, ArticleFacts, WeeklyExtras, …)
+│   ├── ingest.py            feedparser + trafilatura pipeline
+│   ├── cluster.py           Keyword filter (title → summary → body cascade)
+│   ├── pipeline.py          Full analysis pipeline + weekly modules
+│   ├── article_cache.py     Daily JSON cache management
+│   └── llm/
+│       ├── prompts.py       All LLM prompt templates
+│       └── providers/       Anthropic / OpenAI / Gemini / DeepSeek adapters
+├── frontend/
+│   └── src/
+│       ├── components/
+│       │   ├── WorldMap.tsx          Interactive SVG heatmap
+│       │   ├── RegionPanel.tsx       Country article side panel
+│       │   ├── ResultView.tsx        Analysis result layout
+│       │   ├── ArticleDigestList.tsx Per-article summary cards
+│       │   ├── WeeklyView.tsx        Weekly analysis modules
+│       │   ├── ConsensusSection.tsx
+│       │   ├── DivergenceCard.tsx
+│       │   ├── EntityCard.tsx
+│       │   └── GapSection.tsx
+│       ├── api.ts            Fetch wrappers + SSE hook
+│       └── types.ts          TypeScript types mirroring Pydantic models
+├── sources.yaml              News source configuration
+├── cache/                    Auto-generated daily article snapshots
+└── briefs/                   Saved analysis results (JSON)
+```
+
+---
+
+## Quick Start
+
+### Prerequisites
+- Python 3.11+
+- Node.js 18+
+- API key for at least one LLM provider (DeepSeek recommended for cost)
+
+### Setup
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
+# Clone and install backend
+git clone <repo>
+cd AI_NEWS
+python -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
+# Configure
 cp .env.example .env
-# edit .env and set at least one of ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY
-# and set LLM_PROVIDER accordingly
+# Edit .env — set LLM_PROVIDER and the corresponding API key
 
-# 1) Just fetch and print an index of today's articles:
-python -m news.main fetch
-
-# 2) Fetch + run the FACT_EXTRACTION prompt on the first article:
-python -m news.main test-extract
-
-# 3) Same, but run on the first 3 articles:
-python -m news.main test-extract -n 3
+# Install frontend
+cd frontend
+npm install
 ```
 
-## Phase 2: cross-reference a topic
+### Running
 
+**Backend** (terminal 1):
 ```bash
-# Pipe-separated synonyms bridge bilingual sources in a single run:
-python -m news.main analyze "加沙|Gaza|gaza"
-python -m news.main analyze "乌克兰|Ukraine|Kyiv|Kiev" --max 8
-python -m news.main analyze "美国大选|US election|Trump|Harris" --print
+uvicorn api.main:app --reload --port 8000
 ```
 
-This runs the full chain:
-
-1. **Fetch** from every source in `sources.yaml` (past `FETCH_WINDOW_HOURS` hours).
-2. **Filter** articles mentioning any of the supplied synonyms
-   (title/summary first; falls back to full-body match if < `--min-hits`).
-3. **Extract facts** per article (emotion-stripped JSON).
-4. **Cross-reference** all facts in one LLM call, producing:
-    - `consensus_facts` — claims every camp agrees on
-    - `divergences` — points where bias_tags diverge, with per-camp framing
-    - `suspicious_gaps` — facts only one camp mentions
-5. **Render** a Markdown briefing into `briefs/<topic>_<timestamp>.md`.
-
-Use `|` to bridge languages (e.g. `"加沙|Gaza"`) — the filter matches case-insensitive
-substrings so both zh and en articles get caught in one pass.
-
-## Project layout
-
-```
-news/
-├── config.py          env + sources.yaml loader
-├── models.py          Pydantic shared models (Article, ExtractedFact, …)
-├── ingest.py          feedparser + trafilatura pipeline
-├── llm/
-│   ├── base.py        LLMProvider ABC + get_provider()
-│   ├── anthropic_provider.py
-│   ├── openai_provider.py
-│   ├── gemini_provider.py
-│   └── prompts.py     prompt templates (Phase 1: fact extraction only)
-└── main.py            CLI entry point
-sources.yaml           customise your news sources here
-.env.example           copy -> .env, add API keys
+**Frontend** (terminal 2):
+```bash
+cd frontend
+npm run dev
 ```
 
-## Customising sources
+Open `http://localhost:5173`
 
-Edit `sources.yaml`. Each entry needs:
+The backend fetches RSS on startup and then refreshes automatically every hour.
+
+---
+
+## Configuration
+
+### `.env`
+
+```env
+LLM_PROVIDER=deepseek          # anthropic | openai | gemini | deepseek
+DEEPSEEK_API_KEY=sk-...
+# ANTHROPIC_API_KEY=...
+# OPENAI_API_KEY=...
+# GEMINI_API_KEY=...
+```
+
+### `sources.yaml`
 
 ```yaml
-- name: "Human-readable name"
-  bias_tag: "some-label"     # free-form; used downstream by cross-reference prompt
+- name: "BBC World"
+  bias_tag: "western-uk"
   lang: "en"
-  rss: "https://…/feed.xml"
+  rss: "http://feeds.bbci.co.uk/news/world/rss.xml"
 ```
 
-Dead feeds are tolerated — the pipeline logs and moves on.
+`bias_tag` is a free-form label used by the LLM to attribute framing to camps.
 
-## Phase 2 preview (what's coming next)
+---
 
-- Group articles into *events* using time window + title-keyword overlap + a light LLM pass.
-- For each event, gather the per-article extracted facts and run a second prompt:
-  *"List the claims all sources agree on. Then list each point where the narratives diverge,
-  and label which bias_tag prefers which framing."*
-- Persist the result as structured JSON + render a Markdown briefing.
+## API Endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/map/heat?date=YYYY-MM-DD` | Country → article count heatmap |
+| `GET` | `/api/map/articles?country=X&date=X&week=true` | Articles for a country/date |
+| `POST` | `/api/analyze` | Start analysis job, returns `job_id` |
+| `GET` | `/api/analyze/{job_id}/stream` | SSE progress stream |
+| `GET` | `/api/analyze/{job_id}/result` | Full analysis result JSON |
+| `GET` | `/api/briefs` | List saved analysis briefs |
+| `GET` | `/api/cache/status` | Cache age and article count |
+| `POST` | `/api/cache/refresh` | Manually trigger RSS refresh |
