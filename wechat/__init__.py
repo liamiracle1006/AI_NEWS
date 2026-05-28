@@ -69,6 +69,7 @@ def load_config_from_env() -> IlinkConfig:
         hot_alert_target=os.getenv("WECHAT_HOT_ALERT_TARGET", ""),
         analyze_max_articles=_envint("WECHAT_ANALYZE_MAX_ARTICLES", 10),
         analyze_timeout_seconds=_envint("WECHAT_ANALYZE_TIMEOUT", 600),
+        claude_allowed_users=_envlist("CLAUDE_ALLOWED_USERS"),
         api_base=os.getenv("WECHAT_API_BASE", "http://localhost:8000/api"),
     )
 

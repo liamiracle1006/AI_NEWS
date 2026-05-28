@@ -88,9 +88,18 @@ AI_NEWS/
   - `wechat/{intent_parser,formatter,renderer,scheduler}.py`（从 wechat_plugin 搬过来，去掉 CoW 引用）
   - 启用方式：`.env` 设 `WECHAT_ENABLED=true`，**单条 `uvicorn api.main:app` 就启动一切**
   - CoW 副本仍可作为备选（如需多 channel 时）
+- **Phase 10 P0**：语音输入（iLink `type=3` + 腾讯 ASR `voice_item.text`）+ LLM 意图救援
+- **Phase 10 P1.1**：自我重启（`scripts/start_ai_news.bat` 永循环 + dispatcher "重启" 分支 → `os._exit(0)`；`AI_NEWS_BAT_LOOP=1` 安全门）
+- **Phase 10 P1.2**：Claude Code 元入口（可行性先行的两阶段执行）
+  - `wechat/dispatcher.py` 加 `_claude_pending` 状态 + `_check_claude_trigger` / `_check_claude_pending` / `_run_claude_subprocess` / `_run_claude_phase1/phase2` / `_send_chunked`
+  - 强词直通（"@claude / 让 claude / 新增加功能 / 给 bot 加" 等 15 个）；弱词（"帮我加/帮我做/实现一下" 等 9 个）先调 DeepSeek 一句 YES/NO
+  - 白名单：`.env` 的 `CLAUDE_ALLOWED_USERS=<id1>,<id2>`；空 = fail-closed
+  - 计费：subprocess `env.pop("ANTHROPIC_API_KEY")` 强制走订阅模式
+  - 无 TTL · 手动"退出"才放弃；refinement（自然语言补充）会启二次 phase-1
+  - 子进程读 `CLAUDE.md` + `wechat/task_log.md`，phase-2 后由 Claude 自己追加 task_log
 
 待实现 / TODO：
-- 路径 B 用真·微信验证一遍（terminal 模式没有了，需直接扫码测）
+- P1.3 端到端联调："让 Claude 加 X 功能" → 看方案 → 执行 → 重启 → 用新功能
 - 深度分析速度优化（详见 `~/.claude/plans/readme-progress-squishy-meerkat.md` 番外）
 
 ## 踩过的坑
@@ -103,9 +112,14 @@ AI_NEWS/
 - **PowerShell 的 `curl` 是 `Invoke-WebRequest` 别名**：调试 API 必须用 `curl.exe`
 - **`@nivo/sankey` 与 `react-simple-maps` peer dep 冲突**：安装必须加 `--legacy-peer-deps`
 - **`.env` 必须在 `.gitignore` 里**：当前已正确忽略，未泄露过 API key
+- **P1.1 重启 silent failure**：dispatcher.py 漏 `import os` → `_handle_restart` 异常被 try/except 吃掉，ack/重启都不发。教训：每次新加分支记得带上对应 import；终端日志一定要确保 `PYTHONUNBUFFERED=1` + `logging.basicConfig(force=True)` 才能看见 traceback
+- **Python 字符串里"双引号"嵌"双引号"**：用 `『』` 或单引号包，否则 `"...说"退出"放弃..."` 直接把字符串截断成两段，整个文件 SyntaxError
+- **iLink 服务器对短时间相同内容自动去重**：连续两次发 "今日热点" 收到的 heat 列表完全一样 → 第二条被服务器返回"请稍后再试。"。不是 bot bug，发别的内容（"你好" / 不同话题分析）正常。如果将来非要让重复内容也能发出去，可以在 send_text 尾部加个隐形时间戳（不推荐——污染输出）
+- **claude CLI 在 elevated bat 里找不到**：Admin 启动的 cmd 进程 PATH 可能丢失 npm 全局路径；用 `shutil.which("claude")` 会返回 None。`wechat/dispatcher.py:_find_claude_cli` 加了 `%APPDATA%\npm\claude.cmd` 等几个 fallback 路径兜底
 
 ## 下一步
 
-- 跑通 CoW 微信测试：装依赖 → 配置 deepseek key → 扫码登录小号 → 私聊验证 "分析以色列"
-- 实现 `send_to_user` 主动推送（CoW weixin channel 的 nickname → user_id 映射）
-- 视情况优化图片渲染（Pillow 朴素版可换 imgkit/html2image）
+- 改完 bat 别忘重启加载新代码：关掉 start_ai_news.bat 黑窗口，重新双击，等待 iLink 自动登录（凭证在 `~/.ai_news_wechat.json`）
+- 配 `.env` 加 `CLAUDE_ALLOWED_USERS=<你的 user_id>`，否则 Claude 入口 fail-closed
+- 微信发 "新增加功能：在 wechat/dispatcher.py 头加一行注释 hello-from-claude" 跑端到端联调（最小可验证任务）
+- 视情况切独立 API key（`BOT_ANTHROPIC_API_KEY` + 修改 `_run_claude_subprocess` 注入），如果发现订阅模式跟自己用配额冲突

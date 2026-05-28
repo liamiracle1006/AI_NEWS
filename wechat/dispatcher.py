@@ -9,10 +9,14 @@ from __future__ import annotations
 import io
 import logging
 import os
+import shutil
+import subprocess
 import threading
 import time
 import urllib.parse
 import uuid
+from collections import defaultdict, deque
+from pathlib import Path
 from typing import Optional
 
 import requests
@@ -31,6 +35,138 @@ from .renderer import is_available as renderer_available, render_brief_png, rend
 from .types import IlinkConfig, IncomingMessage, OutgoingReply, ReplyType
 
 logger = logging.getLogger(__name__)
+
+
+# ── P1.2 · Claude Code 元入口相关常量 ─────────────────────────────────────────
+# 项目根（dispatcher.py 在 wechat/，所以 parent.parent 是 AI_NEWS/）
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+# 强词：substring 命中即进 phase-1，不再过 LLM
+STRONG_CLAUDE_TRIGGERS = (
+    "@claude", "@Claude",
+    "让 claude", "让claude", "让 Claude", "让Claude",
+    "新增加功能", "新增功能", "加个功能", "添加功能", "添加新功能",
+    "给 bot 加", "给bot加", "帮 bot 加", "帮bot加",
+)
+
+# 弱词：substring 命中后调 DeepSeek 一句 YES/NO 才进 phase-1
+WEAK_CLAUDE_TRIGGERS = (
+    "帮我加", "帮我做", "帮我写", "帮我修", "帮我看",
+    "实现一下", "实现这个", "做个", "做一个",
+)
+
+# pending 状态下用户回这些 = 退出 Claude 模式
+CLAUDE_CANCEL_WORDS = {
+    "退出", "取消", "不要了", "算了", "停",
+    "exit", "cancel", "quit",
+    "/exit", "/quit", "/cancel",
+    "退出claude", "退出 claude", "取消claude", "取消 claude",
+}
+
+# pending 状态下用户回这些 = 确认执行（进 phase-2）
+CLAUDE_CONFIRM_WORDS = {
+    "执行", "好", "好的", "ok", "go", "干", "继续", "yes", "y", "1",
+    "确认", "确定", "改吧", "动手", "开干",
+}
+
+PHASE_1_PROMPT = """你是 AI_NEWS 项目的开发助手。项目根目录在 cwd（已自动加载 CLAUDE.md）。
+
+【相关资料】
+- CLAUDE.md：项目长期上下文
+- wechat/task_log.md：之前任务流水（如果存在）
+
+【本用户最近的微信对话】
+{recent_msgs}
+
+【用户当前请求】
+{current_request}
+
+【你的任务】
+只做可行性分析。**严禁修改任何文件**。给出：
+1. 你理解的需求
+2. 实现步骤（哪些文件，新增 / 修改了什么，大致行数）
+3. 用户需要做的配合（重启 / 配 key / 浏览器扫码等）
+4. 风险评估（低/中/高 + 一句话理由）
+5. 建议执行 ✅ / 建议讨论 🟡 / 不建议 🔴
+
+要求：紧凑、要点式、≤ 800 字。结尾直接停，不要写"请回复执行"——dispatcher 会自动追加提示。"""
+
+PHASE_2_PROMPT = """你是 AI_NEWS 项目的开发助手。当前用户 ID 是 {user_id}。
+
+【上一阶段的方案】
+{proposal}
+
+【用户的原始请求】
+{original_request}
+
+【用户的确认 / 补充】
+{confirmation_text}
+
+【你的任务】
+按方案动手改代码。改完每个文件简述变化。最后给出：
+- 改动文件清单（每行一个绝对路径）
+- 用户下一步要做什么（重启 / 测试命令 / 配置）
+- 是否需要 commit（默认不 commit，除非用户明示）
+
+完成后请把本次任务追加到 wechat/task_log.md（追加而非覆盖；如果文件不存在请创建）。
+格式：
+
+## YYYY-MM-DD HH:MM · 用户：{user_id}
+**请求**：（这里写原始请求的简短摘要）
+**方案概要**：（一句话）
+**改动**：（文件列表）
+**Commit**: 未提交 / <hash>"""
+
+WEAK_CLASSIFIER_SYSTEM = (
+    "判断用户的一句话是不是在让我**改 AI_NEWS 代码 / 加新功能 / 改 bot 行为**。"
+    "只回答 YES 或 NO，不要解释。"
+)
+
+
+def _find_claude_cli() -> Optional[str]:
+    """定位 claude CLI 可执行文件。
+
+    Windows 下 claude 通常装在 npm 全局目录（`%APPDATA%\\npm\\claude.cmd`）。
+    用 Administrator 启动 bat 时，Admin 的 PATH 跟当前用户的 PATH 不一样，
+    `shutil.which("claude")` 可能返回 None。这里加几个常见安装路径兜底。
+    """
+    p = shutil.which("claude")
+    if p:
+        return p
+    candidates: list[str] = []
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        candidates += [
+            os.path.join(appdata, "npm", "claude.cmd"),
+            os.path.join(appdata, "npm", "claude.exe"),
+            os.path.join(appdata, "npm", "claude"),
+        ]
+    user_profile = os.environ.get("USERPROFILE")
+    if user_profile:
+        candidates += [
+            os.path.join(user_profile, "AppData", "Roaming", "npm", "claude.cmd"),
+            os.path.join(user_profile, ".npm-global", "claude.cmd"),
+            os.path.join(user_profile, ".claude", "local", "claude.cmd"),
+            os.path.join(user_profile, ".claude", "local", "claude.exe"),
+            os.path.join(user_profile, ".claude", "local", "claude"),
+        ]
+    local_appdata = os.environ.get("LOCALAPPDATA")
+    if local_appdata:
+        candidates.append(os.path.join(local_appdata, "Programs", "claude", "claude.cmd"))
+    for c in candidates:
+        if os.path.isfile(c):
+            return c
+    return None
+
+PENDING_INTENT_CLASSIFIER_SYSTEM = """\
+用户正在跟我（Claude Code 元代理）对话。
+我刚给了他一个改代码的方案，正在等他回应。
+判断他这条消息表达的是哪种意图，三选一：
+- CONFIRM：同意 / 执行 / 继续 / 确认 / 干吧 / 改吧 / 好的
+- CANCEL：放弃 / 退出 / 取消 / 算了 / 结束 / 停了 / 别搞了 / 不弄了 / 先不做了
+- REFINE：还在讨论方案 / 补充意见 / 提修改要求 / 问问题
+
+只回答 CONFIRM 或 CANCEL 或 REFINE，不要解释。"""
 
 
 class Dispatcher:
@@ -83,6 +219,12 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
         self._llm_provider = None
         # 待确认的意图（每个 user_id 一条）：{user_id: {"intent": Intent, "expires": ts}}
         self._pending: dict[str, dict] = {}
+        # P1.2 · Claude Code 元入口的 pending 状态（每个 user_id 一条；无 TTL，必须手动退出）
+        # {user_id: {"request": str, "proposal": str|None, "created_at": float,
+        #            "running": "phase1"|"phase2"|False, "cancelled": bool}}
+        self._claude_pending: dict[str, dict] = {}
+        # 每个 user 最近 10 条文本消息，注入 Claude phase-1 prompt 做短期上下文
+        self._recent_msgs: dict[str, deque] = defaultdict(lambda: deque(maxlen=10))
         channel.set_dispatcher(self._dispatch)
 
     def _get_llm(self):
@@ -113,6 +255,14 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
         logger.info(msg_log)
         print(msg_log, flush=True)
 
+        # P1.2 · 记录最近消息（为 Claude phase-1 prompt 提供短期上下文）
+        if text:
+            self._recent_msgs[msg.from_user_id].append(text)
+
+        # P1.2 · 优先处理 Claude 元代理的 pending 状态（无 TTL，必须手动退出）
+        if self._check_claude_pending(msg, channel):
+            return
+
         # 优先检查是否在回应一个待确认的意图
         if self._check_pending_confirmation(msg, channel):
             return
@@ -134,6 +284,10 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
             return
         if text in ("强制重启", "force restart", "force-restart", "强退"):
             self._handle_force_restart(msg, channel)
+            return
+
+        # P1.2 · Claude Code 元入口：强词直通 / 弱词过 DeepSeek YES-NO
+        if self._check_claude_trigger(msg, channel):
             return
 
         intent = parse_intent(text)
@@ -209,6 +363,335 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
             os._exit(0)
 
         threading.Thread(target=_delayed_exit, daemon=True, name="force-exit").start()
+
+    # ── P1.2 · Claude Code 元入口（可行性先行的两阶段执行）───────────────────
+
+    def _detect_claude_trigger(self, text: str) -> Optional[str]:
+        """返回 'strong' / 'weak' / None。"""
+        if not text:
+            return None
+        s = text.lower()
+        for kw in STRONG_CLAUDE_TRIGGERS:
+            if kw.lower() in s:
+                return "strong"
+        for kw in WEAK_CLAUDE_TRIGGERS:
+            if kw.lower() in s:
+                return "weak"
+        return None
+
+    def _classify_weak_trigger(self, text: str) -> bool:
+        """弱词命中时让 DeepSeek 判 YES/NO。LLM 不可用或异常 → False（不冒进）。"""
+        provider = self._get_llm()
+        if provider is None:
+            return False
+        try:
+            raw = provider.complete(
+                WEAK_CLASSIFIER_SYSTEM,
+                f'用户的话："{text}"',
+                max_tokens=4,
+                temperature=0.0,
+            )
+        except Exception as e:
+            logger.warning(f"[wechat-dispatch] weak classifier failed: {e}")
+            return False
+        result = (raw or "").strip().upper()
+        is_yes = result.startswith("YES")
+        logger.info(f"[wechat-dispatch] weak classifier: {result!r} → {is_yes}")
+        return is_yes
+
+    def _classify_pending_reply(self, text: str) -> str:
+        """在 Claude pending 状态下，把用户回复分类为 confirm / cancel / refine。
+
+        优先精确匹配；不命中再调 LLM。LLM 异常时回落到 'refine'（最安全：继续讨论方案）。
+        """
+        t = (text or "").strip()
+        tl = t.lower()
+        if t in CLAUDE_CONFIRM_WORDS or tl in CLAUDE_CONFIRM_WORDS:
+            return "confirm"
+        if t in CLAUDE_CANCEL_WORDS or tl in CLAUDE_CANCEL_WORDS:
+            return "cancel"
+
+        provider = self._get_llm()
+        if provider is None:
+            return "refine"
+        try:
+            raw = provider.complete(
+                PENDING_INTENT_CLASSIFIER_SYSTEM,
+                f'用户消息："{t}"',
+                max_tokens=8,
+                temperature=0.0,
+            )
+        except Exception as e:
+            logger.warning(f"[wechat-dispatch] pending classifier failed: {e}")
+            return "refine"
+        result = (raw or "").strip().upper()
+        if "CANCEL" in result:
+            decision = "cancel"
+        elif "CONFIRM" in result:
+            decision = "confirm"
+        else:
+            decision = "refine"
+        logger.info(f"[wechat-dispatch] pending classifier: {result!r} → {decision}")
+        return decision
+
+    def _check_claude_trigger(self, msg: IncomingMessage, channel: IlinkChannel) -> bool:
+        """检测是否要进 Claude 元代理 phase-1。命中并启动返回 True。"""
+        text = (msg.text or "").strip()
+        kind = self._detect_claude_trigger(text)
+        if kind is None:
+            return False
+
+        if kind == "weak":
+            if not self._classify_weak_trigger(text):
+                return False  # LLM 说不是改代码 → 不拦截，让原流程接管
+
+        # 白名单（fail-closed：未配置或不在名单 → 拒绝）
+        allowed = self.config.claude_allowed_users
+        if not allowed:
+            channel.send_text(
+                msg.from_user_id,
+                "🛑 Claude Code 入口未启用。\n\n"
+                "如需启用，请在 .env 中添加：\n"
+                f"CLAUDE_ALLOWED_USERS={msg.from_user_id}\n\n"
+                "然后重启 bot。"
+            )
+            return True
+        if msg.from_user_id not in allowed:
+            channel.send_text(msg.from_user_id, "🛑 Claude Code 仅授权账号可用。")
+            return True
+
+        # 立即在 pending 里挂上 running 状态，这样 "退出" 能在 phase-1 跑的过程中起效
+        self._claude_pending[msg.from_user_id] = {
+            "request": text,
+            "proposal": None,
+            "created_at": time.time(),
+            "running": "phase1",
+            "cancelled": False,
+        }
+        channel.send_text(
+            msg.from_user_id,
+            "🧠 收到，正在让 Claude 做可行性分析（约 30 秒 – 2 分钟）...\n"
+            "（期间可以发『退出』放弃）"
+        )
+        threading.Thread(
+            target=self._run_claude_phase1,
+            args=(msg, False),
+            daemon=True,
+            name="claude-phase1",
+        ).start()
+        return True
+
+    def _check_claude_pending(self, msg: IncomingMessage, channel: IlinkChannel) -> bool:
+        """有 Claude pending 时优先处理。用 LLM 分类用户回复的意图。"""
+        pending = self._claude_pending.get(msg.from_user_id)
+        if not pending:
+            return False
+
+        text = (msg.text or "").strip()
+        running = pending.get("running")
+        intent = self._classify_pending_reply(text)
+
+        # CANCEL：在任何阶段都尊重
+        if intent == "cancel":
+            pending["cancelled"] = True
+            self._claude_pending.pop(msg.from_user_id, None)
+            if running:
+                channel.send_text(
+                    msg.from_user_id,
+                    "✅ 已退出 Claude 模式（正在跑的任务会被忽略）"
+                )
+            else:
+                channel.send_text(msg.from_user_id, "✅ 已退出 Claude 模式")
+            return True
+
+        # 阶段进行中：除取消外其他一律提示稍等
+        if running == "phase1":
+            channel.send_text(msg.from_user_id, "🧠 Claude 还在做可行性分析，稍等…（想放弃发『退出』）")
+            return True
+        if running == "phase2":
+            channel.send_text(msg.from_user_id, "🛠️ Claude 还在改代码，稍等…（想放弃发『退出』）")
+            return True
+
+        # 已等待用户确认：confirm → phase-2；refine → 二次 phase-1
+        if intent == "confirm":
+            pending["running"] = "phase2"
+            channel.send_text(
+                msg.from_user_id,
+                "🛠️ Claude 开始改代码（约 1 – 5 分钟）...\n"
+                "（期间发的指令会等改完再处理；想放弃发『退出』）"
+            )
+            snapshot = dict(pending)
+            threading.Thread(
+                target=self._run_claude_phase2,
+                args=(msg, snapshot),
+                daemon=True,
+                name="claude-phase2",
+            ).start()
+            return True
+
+        # refine：当成自然语言补充意见 → 二次 phase-1
+        pending["running"] = "phase1"
+        channel.send_text(
+            msg.from_user_id,
+            "🧠 收到补充意见，让 Claude 修订方案（约 30 秒 – 2 分钟）..."
+        )
+        threading.Thread(
+            target=self._run_claude_phase1,
+            args=(msg, True),
+            daemon=True,
+            name="claude-phase1-refine",
+        ).start()
+        return True
+
+    def _run_claude_subprocess(self, prompt: str, timeout: int) -> tuple[bool, str]:
+        """订阅模式跑 `claude --print`。返回 (success, output_or_error)。"""
+        claude_path = _find_claude_cli()
+        if claude_path is None:
+            return False, (
+                "❌ 找不到 claude CLI。\n"
+                "已搜索 PATH 和 %APPDATA%\\npm、%USERPROFILE%\\.claude\\local 等常见位置。\n"
+                "请确认 Claude Code 已安装，并在 cmd 里 `where claude` 能看到路径。"
+            )
+        env = os.environ.copy()
+        env.pop("ANTHROPIC_API_KEY", None)   # 强制走订阅
+        env.pop("CLAUDE_API_KEY", None)
+        try:
+            t0 = time.time()
+            proc = subprocess.run(
+                [claude_path, "--print", prompt],
+                cwd=str(_PROJECT_ROOT),
+                env=env,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
+                shell=False,
+            )
+            elapsed = time.time() - t0
+            logger.info(
+                f"[wechat-dispatch] claude --print finished in {elapsed:.1f}s "
+                f"(exit={proc.returncode}, stdout={len(proc.stdout or '')}B, cli={claude_path})"
+            )
+        except subprocess.TimeoutExpired:
+            return False, f"⏱️ Claude Code 超时（{timeout}s），已终止"
+        except FileNotFoundError:
+            return False, f"❌ 解析到 claude 路径但无法执行：{claude_path}"
+        except Exception as e:
+            logger.exception(f"[wechat-dispatch] claude subprocess failed: {e}")
+            return False, f"❌ Claude Code 启动异常：{e}"
+
+        if proc.returncode != 0:
+            err = ((proc.stderr or "") + (proc.stdout or "")).strip()[:800]
+            return False, f"❌ Claude Code 出错 (exit {proc.returncode}):\n{err or '(无输出)'}"
+        out = (proc.stdout or "").strip()
+        if not out:
+            return False, "❌ Claude Code 返回空输出"
+        return True, out
+
+    def _run_claude_phase1(self, msg: IncomingMessage, refined: bool):
+        user_id = msg.from_user_id
+        text = msg.text or ""
+
+        # 构造 recent_msgs（剔除当前这条本身）
+        buf = list(self._recent_msgs.get(user_id, []))
+        if buf and buf[-1] == text:
+            buf = buf[:-1]
+        recent_lines = "\n".join(f"- {m}" for m in buf) if buf else "（无历史）"
+
+        if refined:
+            cur = self._claude_pending.get(user_id) or {}
+            original_request = cur.get("request", "")
+            prev_proposal = cur.get("proposal", "")
+            current_block = (
+                f"【原始请求】\n{original_request}\n\n"
+                f"【用户对方案的修订意见】\n{text}\n\n"
+                f"【上一版方案】\n{prev_proposal}"
+            )
+        else:
+            current_block = text
+
+        prompt = PHASE_1_PROMPT.format(
+            recent_msgs=recent_lines,
+            current_request=current_block,
+        )
+
+        ok, output = self._run_claude_subprocess(prompt, timeout=600)
+
+        # 跑完后回查 pending，看是否在过程中被取消
+        cur = self._claude_pending.get(user_id)
+        if cur is None or cur.get("cancelled"):
+            logger.info(f"[wechat-dispatch] phase-1 result discarded (cancelled) user={user_id}")
+            return
+
+        if not ok:
+            cur["running"] = False
+            self.channel.send_text(user_id, output)
+            return
+
+        cur["proposal"] = output
+        cur["running"] = False
+        if not refined:
+            cur["request"] = text or cur.get("request", "")
+
+        header = "📋 可行性分析\n\n" if not refined else "📋 修订后的方案\n\n"
+        footer = (
+            "\n\n———\n"
+            "回复 '执行' 真改代码 / 自由补充意见继续修订 / '退出' 放弃"
+        )
+        self._send_chunked(user_id, header + output + footer)
+
+    def _run_claude_phase2(self, msg: IncomingMessage, pending_snapshot: dict):
+        user_id = msg.from_user_id
+        original_request = pending_snapshot.get("request", "")
+        proposal = pending_snapshot.get("proposal", "")
+        confirmation = msg.text or "执行"
+
+        prompt = PHASE_2_PROMPT.format(
+            user_id=user_id,
+            proposal=proposal,
+            original_request=original_request,
+            confirmation_text=confirmation,
+        )
+
+        ok, output = self._run_claude_subprocess(prompt, timeout=1800)
+
+        cur = self._claude_pending.get(user_id)
+        if cur is None or cur.get("cancelled"):
+            logger.info(f"[wechat-dispatch] phase-2 result discarded (cancelled) user={user_id}")
+            return
+
+        if not ok:
+            cur["running"] = False
+            self.channel.send_text(user_id, output)
+            return
+
+        # 成功 → 清掉 pending，发结果
+        self._claude_pending.pop(user_id, None)
+        self._send_chunked(
+            user_id,
+            "✅ Claude 改完了\n\n" + output + "\n\n———\n发 '重启' 让新代码生效"
+        )
+
+    def _send_chunked(self, user_id: str, text: str, chunk: int = 1500):
+        """微信单条消息过长会被截断；按行拆分，每段加 [i/n] 头。"""
+        if not text:
+            return
+        # 按行累积，超过 chunk 就切
+        parts: list[str] = []
+        cur = ""
+        for line in text.split("\n"):
+            if cur and len(cur) + 1 + len(line) > chunk:
+                parts.append(cur)
+                cur = line
+            else:
+                cur = (cur + "\n" + line) if cur else line
+        if cur:
+            parts.append(cur)
+        total = len(parts)
+        for i, part in enumerate(parts, 1):
+            prefix = f"[{i}/{total}]\n" if total > 1 else ""
+            self.channel.send_text(user_id, prefix + part)
 
     # ── 确认状态机 ──────────────────────────────────────────────────────────
 

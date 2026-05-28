@@ -56,6 +56,9 @@ class IlinkConfig:
     hot_alert_target: str = ""
     analyze_max_articles: int = 10
     analyze_timeout_seconds: int = 600
+    # Claude Code 元入口（P1.2）：可以触发 `claude --print` 的 user_id 列表
+    # 留空 → fail-closed（谁都不能触发，包括自己）
+    claude_allowed_users: list[str] = field(default_factory=list)
     # API 后端地址（同进程时就是 localhost）
     api_base: str = "http://localhost:8000/api"
 

@@ -345,6 +345,13 @@ class IlinkChannel:
             return
         ret = resp.get("ret")
         errcode = resp.get("errcode")
+        # 任何非 0 / 非 None 的状态码都打出来，便于排查 "请稍后再试" 这类静默失败
+        if (ret not in (None, 0)) or (errcode not in (None, 0)):
+            errmsg = resp.get("errmsg") or resp.get("err_msg") or resp.get("msg") or ""
+            logger.warning(
+                f"[iLink] send response non-OK for {receiver}: "
+                f"ret={ret} errcode={errcode} errmsg={errmsg!r} full={resp}"
+            )
         if ret == SESSION_EXPIRED_ERRCODE or errcode == SESSION_EXPIRED_ERRCODE:
             self._invalidate_context_token(receiver)
 
