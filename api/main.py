@@ -9,6 +9,14 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .routes import router
 
+# 让 news.* / wechat.* 的 logger.info / logger.warning 都能打印到终端，
+# 不然 uvicorn 默认只放它自己的 access log，应用层日志被静默吞掉。
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
+
 log = logging.getLogger(__name__)
 
 app = FastAPI(title="AI News Analyzer", version="0.4.0")
