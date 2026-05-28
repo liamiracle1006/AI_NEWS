@@ -125,6 +125,9 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
             threading.Thread(target=_do_hot_alert, args=(self,),
                              kwargs={"verbose": True}, daemon=True).start()
             return
+        if text in ("重启", "重启 bot", "重启 uvicorn", "restart", "reboot"):
+            self._handle_restart(msg, channel)
+            return
 
         intent = parse_intent(text)
         if intent is None:
@@ -149,6 +152,26 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
             self._handle_analyze(msg, intent)
         elif intent.action == "confirm_analyze":
             self._handle_confirm_analyze(msg, intent)
+
+    # ── 自我重启（配合 start_ai_news.bat 的永循环）───────────────────────
+
+    def _handle_restart(self, msg: IncomingMessage, channel: IlinkChannel):
+        """微信发"重启"时触发：先回执 → 延迟 3 秒 → os._exit(0)。
+        .bat 包装器检测到正常退出后自动重启 uvicorn。
+        """
+        if msg.is_voice:
+            channel.send_text(msg.from_user_id, f"🎤 我听到：{msg.text}\n♻️ 收到，3 秒后重启…")
+        else:
+            channel.send_text(msg.from_user_id, "♻️ 收到，3 秒后重启…\n(用 .bat 启动才会自动重启回来)")
+
+        def _delayed_exit():
+            time.sleep(3)
+            logger.warning("[wechat-dispatch] self-restart triggered, exiting")
+            # 用 os._exit(0) 而非 sys.exit()，绕开 uvicorn 的 graceful shutdown
+            # 因为 uvicorn 内有些线程不会响应 SIGTERM，graceful 可能挂住几十秒。
+            os._exit(0)
+
+        threading.Thread(target=_delayed_exit, daemon=True, name="self-restart").start()
 
     # ── 确认状态机 ──────────────────────────────────────────────────────────
 
