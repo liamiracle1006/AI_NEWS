@@ -1,0 +1,244 @@
+# encoding:utf-8
+"""微信消息分发器 — AI_NEWS 同进程版。
+
+CoW 时代要走 HTTP 调 localhost:8000；现在直接 import pipeline 函数，
+省一跳，也避免微信 daemon 启动早于 FastAPI 时的连接失败。
+"""
+from __future__ import annotations
+
+import io
+import logging
+import threading
+import time
+import urllib.parse
+import uuid
+from typing import Optional
+
+import requests
+
+from .formatter import (
+    format_analysis,
+    format_articles,
+    format_briefs,
+    format_heat,
+    format_help,
+    render_analysis_card,
+)
+from .ilink_channel import IlinkChannel
+from .intent_parser import COUNTRY_ALIASES, Intent, parse_intent
+from .renderer import is_available as renderer_available, render_brief_png, render_brief_pdf, write_pdf_to_temp
+from .types import IlinkConfig, IncomingMessage, OutgoingReply, ReplyType
+
+logger = logging.getLogger(__name__)
+
+
+class Dispatcher:
+    """无 plugin 框架，直接基于 IncomingMessage → 调用 API（同进程 HTTP）→ 回复。
+
+    保留通过 HTTP 调本地 FastAPI 的方式（而不是直接 import pipeline 函数），
+    原因：复用现有的 job 队列 / SSE / brief 持久化逻辑，避免重写。
+    """
+
+    def __init__(self, channel: IlinkChannel, config: IlinkConfig):
+        self.channel = channel
+        self.config = config
+        self.api_base = config.api_base
+        channel.set_dispatcher(self._dispatch)
+
+    # ── 公共入口 ───────────────────────────────────────────────────────────
+
+    def _dispatch(self, msg: IncomingMessage, channel: IlinkChannel):
+        """每条收到的消息都进这里。在调用线程内执行，慢操作要起新线程。"""
+        # 白名单（空 = 任何人都可用）
+        if self.config.whitelist_user_ids and msg.from_user_id not in self.config.whitelist_user_ids:
+            return
+
+        text = (msg.text or "").strip()
+        logger.info(f"[wechat-dispatch] {msg.from_user_id}: {text[:60]}")
+
+        # 管理类指令（不进 intent_parser）
+        if text in ("测试推送", "test_push", "测试每日推送"):
+            channel.send_text(msg.from_user_id, "✅ 已在后台触发每日推送，请等待…")
+            from .scheduler import _do_daily_push
+            threading.Thread(target=_do_daily_push, args=(self,), daemon=True).start()
+            return
+        if text in ("测试告警", "test_alert"):
+            channel.send_text(msg.from_user_id, "✅ 已在后台触发热点告警检查…")
+            from .scheduler import _do_hot_alert
+            threading.Thread(target=_do_hot_alert, args=(self,),
+                             kwargs={"verbose": True}, daemon=True).start()
+            return
+
+        intent = parse_intent(text)
+        if intent is None:
+            # 非指令消息：当前直接静默（未来可接 DeepSeek 闲聊）
+            return
+
+        if intent.action == "help":
+            channel.send_text(msg.from_user_id, format_help())
+        elif intent.action == "heat":
+            self._handle_heat(msg)
+        elif intent.action == "brief_list":
+            self._handle_briefs(msg)
+        elif intent.action == "articles":
+            self._handle_articles(msg, intent)
+        elif intent.action == "analyze":
+            self._handle_analyze(msg, intent)
+
+    # ── 分支处理 ───────────────────────────────────────────────────────────
+
+    def _handle_heat(self, msg: IncomingMessage):
+        try:
+            heat = self.api_get("/map/heat") or {}
+            self.channel.send_text(msg.from_user_id, format_heat(heat))
+        except Exception as e:
+            self.channel.send_text(msg.from_user_id, f"❌ 拉取热度榜失败：{e}")
+
+    def _handle_briefs(self, msg: IncomingMessage):
+        try:
+            briefs = self.api_get("/briefs") or []
+            self.channel.send_text(msg.from_user_id, format_briefs(briefs))
+        except Exception as e:
+            self.channel.send_text(msg.from_user_id, f"❌ 拉取简报失败：{e}")
+
+    def _handle_articles(self, msg: IncomingMessage, intent: Intent):
+        try:
+            params = {"country": intent.country, "week": "true" if intent.week else "false"}
+            articles = self.api_get("/map/articles", params=params) or []
+            self.channel.send_text(
+                msg.from_user_id,
+                format_articles(articles, intent.country_zh or intent.country, intent.week),
+            )
+        except Exception as e:
+            self.channel.send_text(msg.from_user_id, f"❌ 拉取文章失败：{e}")
+
+    def _handle_analyze(self, msg: IncomingMessage, intent: Intent):
+        ack = f"🔍 正在分析「{intent.keyword.split('|')[0]}」"
+        if intent.week:
+            ack += "（本周综合）"
+        ack += "，预计 2–5 分钟，请稍候…"
+        self.channel.send_text(msg.from_user_id, ack)
+
+        threading.Thread(
+            target=self._run_analyze_and_push,
+            args=(intent, msg.from_user_id),
+            daemon=True,
+            name="wechat-analyze",
+        ).start()
+
+    def _run_analyze_and_push(self, intent: Intent, to_user_id: str):
+        try:
+            result, _job_id = self.run_analyze_blocking(intent.keyword, week_mode=intent.week)
+            brief_id = result.get("_brief_id")
+            display_topic = intent.keyword.split("|")[0]
+
+            if intent.pdf:
+                self._send_pdf(to_user_id, brief_id, display_topic)
+            elif intent.image:
+                self._send_image_for_brief(to_user_id, brief_id, display_topic, result)
+            else:
+                text = format_analysis(result, display_topic, brief_id)
+                self.channel.send_text(to_user_id, text)
+        except Exception as e:
+            logger.exception(f"[wechat-dispatch] analyze failed: {e}")
+            self.channel.send_text(to_user_id, f"❌ 分析失败：{e}")
+
+    def _send_image_for_brief(self, to_user_id: str, brief_id: Optional[str],
+                              topic: str, result: dict):
+        if brief_id and renderer_available():
+            try:
+                png = render_brief_png(self._brief_render_url(brief_id))
+                self.channel.send_image(to_user_id, png)
+                return
+            except Exception as e:
+                logger.warning(f"[wechat-dispatch] Playwright PNG failed: {e}")
+        png = render_analysis_card(result, topic)
+        self.channel.send_image(to_user_id, png)
+
+    def _send_pdf(self, to_user_id: str, brief_id: Optional[str], topic: str):
+        if not brief_id:
+            self.channel.send_text(to_user_id, "❌ 未保存 brief_id，无法生成 PDF。")
+            return
+        if not renderer_available():
+            self.channel.send_text(
+                to_user_id,
+                "❌ PDF 需要 Playwright。请运行：pip install playwright && playwright install chromium",
+            )
+            return
+        try:
+            pdf_bytes = render_brief_pdf(self._brief_render_url(brief_id))
+            pdf_path = write_pdf_to_temp(pdf_bytes, topic)
+            self.channel.send_file(to_user_id, pdf_path)
+        except Exception as e:
+            logger.exception(f"[wechat-dispatch] PDF render failed: {e}")
+            self.channel.send_text(to_user_id, f"❌ PDF 生成失败：{e}")
+
+    def _brief_render_url(self, brief_id: str) -> str:
+        encoded = urllib.parse.quote(brief_id, safe="")
+        return f"{self.api_base}/briefs/{encoded}/render"
+
+    # ── HTTP 客户端 ────────────────────────────────────────────────────────
+
+    def api_get(self, path: str, params: dict = None):
+        r = requests.get(f"{self.api_base}{path}", params=params, timeout=30)
+        r.raise_for_status()
+        return r.json()
+
+    def run_analyze_blocking(self, keyword: str, week_mode: bool = False) -> tuple[dict, str]:
+        body = {
+            "keyword": keyword,
+            "max_articles": self.config.analyze_max_articles,
+            "track_people": True,
+            "auto_synonyms": True,
+            "week_mode": week_mode,
+        }
+        r = requests.post(f"{self.api_base}/analyze", json=body, timeout=30)
+        r.raise_for_status()
+        job_id = r.json()["job_id"]
+
+        deadline = time.time() + self.config.analyze_timeout_seconds
+        while time.time() < deadline:
+            time.sleep(5)
+            poll = requests.get(f"{self.api_base}/analyze/{job_id}/result", timeout=30)
+            if poll.status_code == 200:
+                return poll.json(), job_id
+            if poll.status_code == 500:
+                raise RuntimeError(poll.text)
+        raise TimeoutError(f"analyze timed out after {self.config.analyze_timeout_seconds}s")
+
+    # ── 兼容 scheduler.py 的接口（旧 plugin 风格 + 几个属性） ───────────────
+
+    @property
+    def _user_contexts(self) -> dict:
+        """scheduler 用 plugin._user_contexts 判断有没有可推送的用户。
+        我们映射为 iLink known_users → 假 entry。"""
+        return {uid: (self.channel, None) for uid in self.channel.known_users()}
+
+    def send_to_user(self, nickname: str, text: str,
+                     reply_type=ReplyType.TEXT, content=None) -> bool:
+        """scheduler 主动推送入口。nickname 这里就是 user_id。"""
+        target_uid = nickname
+        # 空 target / 找不到时 fallback 到唯一已知用户
+        known = self.channel.known_users()
+        if not target_uid:
+            if len(known) == 1:
+                target_uid = known[0]
+            else:
+                logger.warning(f"[wechat-dispatch] no target for push (known={len(known)})")
+                logger.info(f"[wechat-dispatch] (dropped) {text[:200]}")
+                return False
+        if target_uid not in known:
+            if len(known) == 1:
+                target_uid = known[0]
+                logger.info(f"[wechat-dispatch] target {nickname!r} unknown, falling back to sole user")
+            else:
+                logger.warning(f"[wechat-dispatch] target {nickname!r} not in known users")
+                return False
+
+        if reply_type == ReplyType.TEXT:
+            return self.channel.send_text(target_uid, text)
+        if reply_type == ReplyType.IMAGE:
+            return self.channel.send_image(target_uid, content if content is not None else text)
+        if reply_type == ReplyType.FILE:
+            return self.channel.send_file(target_uid, str(content if content is not None else text))
+        return False

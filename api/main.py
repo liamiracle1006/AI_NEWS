@@ -28,8 +28,19 @@ REFRESH_INTERVAL_SECONDS = 3600  # 每小时自动刷新一次
 
 @app.on_event("startup")
 async def _startup():
-    """启动时立即建缓存，然后每小时自动刷新。"""
+    """启动时立即建缓存，然后每小时自动刷新。可选地启动微信守护进程。"""
     asyncio.create_task(_auto_refresh_loop())
+
+    # 微信守护进程（opt-in）：.env 中设 WECHAT_ENABLED=true 后才启动
+    try:
+        from wechat import start_daemon_async
+        # 略晚一拍再启微信，让 FastAPI 路由先就绪（dispatcher 要回调 /api/*）
+        async def _delayed_wechat():
+            await asyncio.sleep(2)
+            start_daemon_async()
+        asyncio.create_task(_delayed_wechat())
+    except Exception as exc:  # noqa: BLE001
+        print(f"[wechat] startup failed: {exc}")
 
 
 async def _auto_refresh_loop():

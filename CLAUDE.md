@@ -79,14 +79,18 @@ AI_NEWS/
 - 各方报道摘要板块（逐篇展示）
 - 后端启动时自动抓 RSS + 每小时后台自动刷新
 - LICENSE（非商用）
-- **Phase 9**：微信接入插件（源码在 `wechat_plugin/`，由 `sync_to_cow.ps1` 同步到 CoW 副本 `c:/Users/wangzy/Desktop/hobby/chatgpt-on-wechat/plugins/ai_news/`）。功能：
-  - 被动查询、热度榜、单国文章、Playwright PNG/PDF（HTML 模板 `api/report_template.py` + 后端路由 `/api/briefs/{id}/render`）
-  - 定时推送 + 热点告警 + `send_to_user` 主动发送（缓存每用户会话 ctx）
-  - 管理指令：`测试推送`、`测试告警`
-  - terminal 渠道与 weixin 渠道**都已实测可用**（2026-05-28 用主号扫码 iLink 验证通过）
+- **Phase 9（CoW 插件版）**：源码在 `wechat_plugin/`，由 `sync_to_cow.ps1` 同步到 CoW 副本。已实测可用，但需常驻第二个 CoW 进程
+- **Phase 9b（路径 B · 单仓库整合）**：抽出 CoW 的 weixin channel 进 `AI_NEWS/wechat/`，去掉对 CoW 的依赖：
+  - `wechat/ilink_api.py`（协议层，从 CoW 复制后只换 logger）
+  - `wechat/ilink_channel.py`（精简版长轮询 + QR 登录 + 凭证持久化 + 发送）
+  - `wechat/dispatcher.py`（替代旧 plugin 的 ai_news.py，直接基于 IncomingMessage 分发）
+  - `wechat/types.py`（IncomingMessage / OutgoingReply / ReplyType / IlinkConfig，替代 bridge.context）
+  - `wechat/{intent_parser,formatter,renderer,scheduler}.py`（从 wechat_plugin 搬过来，去掉 CoW 引用）
+  - 启用方式：`.env` 设 `WECHAT_ENABLED=true`，**单条 `uvicorn api.main:app` 就启动一切**
+  - CoW 副本仍可作为备选（如需多 channel 时）
 
 待实现 / TODO：
-- 路径 B：把 CoW 的 weixin channel 抽到 AI_NEWS，变成单仓库
+- 路径 B 用真·微信验证一遍（terminal 模式没有了，需直接扫码测）
 - 深度分析速度优化（详见 `~/.claude/plans/readme-progress-squishy-meerkat.md` 番外）
 
 ## 踩过的坑
