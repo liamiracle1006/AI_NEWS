@@ -24,3 +24,4 @@ cache/
 # WeChat plugin user-specific config (only template is tracked)
 wechat_plugin/config.json
 
+logs/
