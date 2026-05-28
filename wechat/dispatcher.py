@@ -54,7 +54,8 @@ class Dispatcher:
             return
 
         text = (msg.text or "").strip()
-        logger.info(f"[wechat-dispatch] {msg.from_user_id}: {text[:60]}")
+        prefix = "🎤" if msg.is_voice else "💬"
+        logger.info(f"[wechat-dispatch] {prefix} {msg.from_user_id}: {text[:60]}")
 
         # 管理类指令（不进 intent_parser）
         if text in ("测试推送", "test_push", "测试每日推送"):
@@ -71,7 +72,16 @@ class Dispatcher:
 
         intent = parse_intent(text)
         if intent is None:
-            # 非指令消息：当前直接静默（未来可接 DeepSeek 闲聊）
+            # 没命中任何指令
+            if msg.is_voice:
+                # 语音消息总是给个反馈，否则用户以为 bot 没听到 / 死了
+                channel.send_text(
+                    msg.from_user_id,
+                    f"🎤 我听到：{text}\n\n"
+                    "🤖 这不在我当前能力范围内。\n"
+                    "发 '帮助' 看支持的指令清单。"
+                )
+            # 文字消息：保持静默（避免把所有闲聊都吃掉）
             return
 
         if intent.action == "help":

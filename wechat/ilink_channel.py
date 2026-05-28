@@ -273,11 +273,25 @@ class IlinkChannel:
         context_token = raw_msg.get("context_token", "")
         item_list = raw_msg.get("item_list", []) or []
 
+        # iLink 消息 item type 编码：1=text, 2=image, 3=voice, 4=file, 5=video
         text_body = ""
+        is_voice = False
         for item in item_list:
-            if item.get("type") == 1:  # ITEM_TEXT
+            itype = item.get("type")
+            if itype == 1:
                 text_body = item.get("text_item", {}).get("text", "")
                 break
+            elif itype == 3:
+                # 腾讯 ASR 已转录的文字直接放在 voice_item.text 里
+                voice_text = item.get("voice_item", {}).get("text", "")
+                if voice_text:
+                    text_body = voice_text
+                    is_voice = True
+                    break
+                else:
+                    # 极少数情况下没转录成功（噪音/方言），暂时丢弃
+                    # 未来可加自己的 STT 兜底
+                    logger.info(f"[iLink] voice msg without transcription: {msg_id}")
 
         if not text_body or not from_user_id:
             return
@@ -291,6 +305,7 @@ class IlinkChannel:
             from_user_id=from_user_id,
             context_token=context_token,
             create_time=raw_msg.get("create_time_ms", 0),
+            is_voice=is_voice,
         )
 
         if self._dispatcher:

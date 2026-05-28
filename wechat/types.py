@@ -25,6 +25,7 @@ class IncomingMessage:
     context_token: str = ""         # iLink session token，发消息时必须 echo
     create_time: int = 0
     nickname: str = ""              # 可能为空（iLink 通常只返回 user_id）
+    is_voice: bool = False          # 是否由语音转录而来（True → text 来自腾讯 ASR）
 
 
 @dataclass
