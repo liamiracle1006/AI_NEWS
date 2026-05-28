@@ -113,8 +113,12 @@ def _do_daily_push(plugin):
             plugin.send_to_user(target, f"❌ {zh} 分析失败：{e}")
 
 
-def _do_hot_alert(plugin):
-    """对比今天 vs 昨天热度，发现突增就告警。"""
+def _do_hot_alert(plugin, verbose: bool = False):
+    """对比今天 vs 昨天热度，发现突增就告警。
+
+    verbose=True 时即便没有告警也回复一条"当前无异常"，方便手动测试看反馈；
+    scheduler 自动调用时 verbose=False，保持静默不打扰。
+    """
     from .intent_parser import COUNTRY_ZH
 
     target = plugin.config.get("hot_alert_target", "")
@@ -133,7 +137,17 @@ def _do_hot_alert(plugin):
             alerts.append((zh, prev, count))
 
     if not alerts:
-        return  # 静默，没事不打扰
+        if verbose:
+            plugin.send_to_user(
+                target,
+                f"🟢 热点告警检查完成 · 当前无异常\n\n"
+                f"今日 vs 昨日热度对比：\n"
+                f"• 今日 {len(today)} 个国家有报道\n"
+                f"• 昨日 {len(yesterday)} 个国家有报道\n"
+                f"• 触发阈值：≥{min_count} 篇 且 ×{jump} 增幅\n"
+                f"• 无国家达到突增标准"
+            )
+        return
 
     lines = ["⚠️ 热度突增告警", ""]
     for zh, prev, count in alerts[:5]:

@@ -79,11 +79,15 @@ AI_NEWS/
 - 各方报道摘要板块（逐篇展示）
 - 后端启动时自动抓 RSS + 每小时后台自动刷新
 - LICENSE（非商用）
-- **Phase 9**：微信接入插件（CoW 项目位于 `c:/Users/wangzy/Desktop/hobby/chatgpt-on-wechat`），插件目录 `plugins/ai_news/`，支持被动查询、热度榜、单国文章、图片化、每日推送、热点告警
+- **Phase 9**：微信接入插件（源码在 `wechat_plugin/`，由 `sync_to_cow.ps1` 同步到 CoW 副本 `c:/Users/wangzy/Desktop/hobby/chatgpt-on-wechat/plugins/ai_news/`）。功能：
+  - 被动查询、热度榜、单国文章、Playwright PNG/PDF（HTML 模板 `api/report_template.py` + 后端路由 `/api/briefs/{id}/render`）
+  - 定时推送 + 热点告警 + `send_to_user` 主动发送（缓存每用户会话 ctx）
+  - 管理指令：`测试推送`、`测试告警`
+  - terminal 渠道与 weixin 渠道**都已实测可用**（2026-05-28 用主号扫码 iLink 验证通过）
 
 待实现 / TODO：
-- CoW 主动推送（`send_to_user`）当前为占位，需要根据 channel_type 补全 nickname→user_id 查询
-- 测试微信端实际收发流程（需用小号扫码登录）
+- 路径 B：把 CoW 的 weixin channel 抽到 AI_NEWS，变成单仓库
+- 深度分析速度优化（详见 `~/.claude/plans/readme-progress-squishy-meerkat.md` 番外）
 
 ## 踩过的坑
 

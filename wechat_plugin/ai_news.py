@@ -77,11 +77,17 @@ class AINews(Plugin):
             return
 
         msg = ctx.get("msg")
-        nickname = getattr(msg, "from_user_nickname", "") or getattr(msg, "actual_user_nickname", "")
+        # 优先级：nickname → actual_user_nickname → from_user_id（terminal 渠道只有这个）
+        # 这样 terminal 模式下 user_id="User" 也能作为缓存 key，不致于 _user_contexts 始终为空。
+        nickname = (
+            getattr(msg, "from_user_nickname", "")
+            or getattr(msg, "actual_user_nickname", "")
+            or getattr(msg, "from_user_id", "")
+            or "_default"
+        )
 
         # 任何时候只要收到文本，就更新该用户的最近会话上下文，供 scheduler 主动推送用
-        if nickname:
-            self._user_contexts[nickname] = (e_context["channel"], ctx)
+        self._user_contexts[nickname] = (e_context["channel"], ctx)
 
         # 白名单（空列表 = 任何人可用）
         if self.whitelist and nickname not in self.whitelist:
@@ -98,7 +104,8 @@ class AINews(Plugin):
         if content in ("测试告警", "test_alert"):
             self._send_text(e_context, "✅ 已在后台触发热点告警检查…")
             from .scheduler import _do_hot_alert
-            threading.Thread(target=_do_hot_alert, args=(self,), daemon=True).start()
+            # verbose=True：手动测试时即使无异常也回复一条状态消息
+            threading.Thread(target=_do_hot_alert, args=(self,), kwargs={"verbose": True}, daemon=True).start()
             e_context.action = EventAction.BREAK_PASS
             return
 
