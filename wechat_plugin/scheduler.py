@@ -55,22 +55,26 @@ def start_scheduler(plugin):
     """启动所有定时任务。plugin 提供 config + 主动发送接口。"""
     cfg = plugin.config
 
-    if cfg.get("daily_push_enabled", False) and cfg.get("daily_push_target"):
+    # 推送 target 留空时，send_to_user 会 fallback 到唯一缓存用户（自用最常见情况）
+    if cfg.get("daily_push_enabled", False):
         _schedule_daily(
             plugin,
             hour=int(cfg.get("daily_push_cron_hour", 8)),
             minute=int(cfg.get("daily_push_cron_minute", 0)),
             fn=lambda: _do_daily_push(plugin),
         )
-        logger.info("[AINews] daily push enabled")
+        logger.info("[AINews] daily push enabled at %02d:%02d",
+                    cfg.get("daily_push_cron_hour", 8),
+                    cfg.get("daily_push_cron_minute", 0))
 
-    if cfg.get("hot_alert_enabled", False) and cfg.get("hot_alert_target"):
+    if cfg.get("hot_alert_enabled", False):
         _schedule_interval(
             plugin,
             minutes=int(cfg.get("hot_alert_interval_minutes", 60)),
             fn=lambda: _do_hot_alert(plugin),
         )
-        logger.info("[AINews] hot alert enabled")
+        logger.info("[AINews] hot alert enabled, interval=%dm",
+                    cfg.get("hot_alert_interval_minutes", 60))
 
 
 def _do_daily_push(plugin):
@@ -78,7 +82,8 @@ def _do_daily_push(plugin):
     from . import formatter
     from .intent_parser import COUNTRY_ZH, COUNTRY_ALIASES
 
-    target = plugin.config["daily_push_target"]
+    # 留空时让 send_to_user 自动 fallback 到唯一缓存用户（方便手动测试）
+    target = plugin.config.get("daily_push_target", "")
     top_n = int(plugin.config.get("daily_push_top_n", 3))
 
     heat = plugin.api_get("/map/heat") or {}
@@ -100,7 +105,8 @@ def _do_daily_push(plugin):
         zh = COUNTRY_ZH.get(en_name, en_name)
         keyword = COUNTRY_ALIASES.get(zh, en_name)
         try:
-            result, brief_id = plugin.run_analyze_blocking(keyword)
+            result, _job_id = plugin.run_analyze_blocking(keyword)
+            brief_id = result.get("_brief_id")  # set by backend after saving
             text = formatter.format_analysis(result, zh, brief_id)
             plugin.send_to_user(target, text)
         except Exception as e:
@@ -111,7 +117,7 @@ def _do_hot_alert(plugin):
     """对比今天 vs 昨天热度，发现突增就告警。"""
     from .intent_parser import COUNTRY_ZH
 
-    target = plugin.config["hot_alert_target"]
+    target = plugin.config.get("hot_alert_target", "")
     min_count = int(plugin.config.get("hot_alert_min_count", 5))
     jump = float(plugin.config.get("hot_alert_jump_ratio", 3.0))
 

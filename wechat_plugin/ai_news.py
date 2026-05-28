@@ -52,6 +52,10 @@ class AINews(Plugin):
             self.whitelist = self.config.get("whitelist_nicknames", []) or []
             self.timeout = int(self.config.get("analyze_timeout_seconds", 600))
 
+            # nickname → (channel, context)，缓存每个用户最后一次发消息时的会话上下文，
+            # 供 scheduler 主动推送时使用（CoW 大多数 channel 主动发送必须借助一次"被动 ctx"）。
+            self._user_contexts: dict[str, tuple] = {}
+
             self.handlers[Event.ON_HANDLE_CONTEXT] = self.on_handle_context
 
             # 启动定时任务
@@ -75,9 +79,28 @@ class AINews(Plugin):
         msg = ctx.get("msg")
         nickname = getattr(msg, "from_user_nickname", "") or getattr(msg, "actual_user_nickname", "")
 
+        # 任何时候只要收到文本，就更新该用户的最近会话上下文，供 scheduler 主动推送用
+        if nickname:
+            self._user_contexts[nickname] = (e_context["channel"], ctx)
+
         # 白名单（空列表 = 任何人可用）
         if self.whitelist and nickname not in self.whitelist:
             return  # 不响应非白名单，让默认 LLM 流程处理
+
+        # 管理类指令（不通过 intent_parser，直接走关键字）
+        content = (ctx.content or "").strip()
+        if content in ("测试推送", "test_push", "测试每日推送"):
+            self._send_text(e_context, "✅ 已在后台触发每日推送，请等待消息送达…")
+            from .scheduler import _do_daily_push
+            threading.Thread(target=_do_daily_push, args=(self,), daemon=True).start()
+            e_context.action = EventAction.BREAK_PASS
+            return
+        if content in ("测试告警", "test_alert"):
+            self._send_text(e_context, "✅ 已在后台触发热点告警检查…")
+            from .scheduler import _do_hot_alert
+            threading.Thread(target=_do_hot_alert, args=(self,), daemon=True).start()
+            e_context.action = EventAction.BREAK_PASS
+            return
 
         intent = parse_intent(ctx.content)
         if intent is None:
@@ -244,26 +267,40 @@ class AINews(Plugin):
 
     # ───── 主动发送 ──────────────────────────────────────────────────────────
 
-    def send_to_user(self, nickname: str, text: str):
-        """供 scheduler 用的主动发送接口。
+    def send_to_user(self, nickname: str, text: str, reply_type=ReplyType.TEXT, content=None):
+        """主动推送一条消息给指定昵称。
 
-        CoW 不同 channel 主动发送 API 不统一，这里走通用 bot 路径。
-        nickname 应是好友昵称或群名。
+        实现：从 _user_contexts 取该昵称最近一次的 (channel, context)，
+        构造 Reply 并调用 channel.send()。前提是该用户**至少给 bot 发过一条消息**
+        （否则没有可用会话上下文）。
+
+        - reply_type=TEXT 时用 text 作为正文
+        - 其他 reply_type（IMAGE/FILE）时用 content 作为正文（如 BytesIO 或文件路径）
         """
-        try:
-            from channel import channel_factory
-            from config import conf
+        # 1. 优先用该 nickname 自己的缓存
+        entry = self._user_contexts.get(nickname)
 
-            channel = channel_factory.create_channel(conf().get("channel_type"))
-            # 简化：直接构造一个 Reply 给 channel.send
-            # 实际可能需要先查 UserName，这里留作 TODO
+        # 2. 没有该 nickname 的，但只有一个用户在用 bot —— fallback 到任意可用
+        if entry is None and len(self._user_contexts) == 1:
+            entry = next(iter(self._user_contexts.values()))
+            logger.info(f"[AINews] no ctx for {nickname!r}, using sole cached user")
+
+        if entry is None:
             logger.warning(
-                "[AINews] send_to_user not fully implemented — "
-                "needs channel-specific UserName lookup. text=%s",
-                text[:60],
+                f"[AINews] send_to_user({nickname!r}) skipped — "
+                f"no cached session. The target user must message the bot first."
             )
+            logger.info(f"[AINews] (dropped) {text[:200]}")
+            return False
+
+        channel, context = entry
+        reply = Reply(reply_type, content if content is not None else text)
+        try:
+            channel.send(reply, context)
+            return True
         except Exception as e:
-            logger.exception(f"[AINews] send_to_user failed: {e}")
+            logger.exception(f"[AINews] send_to_user failed for {nickname!r}: {e}")
+            return False
 
     # ───── 工具 ──────────────────────────────────────────────────────────────
 
