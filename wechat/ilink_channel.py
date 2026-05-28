@@ -158,39 +158,78 @@ class IlinkChannel:
     # ── QR 登录 ─────────────────────────────────────────────────────────────
 
     def _qr_login(self, base_url: str) -> dict:
+        """iLink 二维码登录。状态机来自 CoW 实测：
+            wait → scaned（已扫码、待手机确认）→ confirmed（成功）
+            或 wait → expired（过期，自动刷新最多 QR_MAX_REFRESHES 次）
+        Token 字段是 bot_token，base_url 在响应里叫 baseurl。
+        """
         api = WeixinApi(base_url=base_url)
         try:
-            qr = api.fetch_qr_code()
+            qr_resp = api.fetch_qr_code()
         except Exception as e:
             logger.error(f"[iLink] fetch QR failed: {e}")
             return {}
-        qrcode = qr.get("qrcode", "")
-        qrcode_url = qr.get("qrcode_img_content", "")
+        qrcode = qr_resp.get("qrcode", "")
+        qrcode_url = qr_resp.get("qrcode_img_content", "")
         if not qrcode:
             logger.error("[iLink] empty qrcode")
             return {}
 
         _print_qr(qrcode_url)
+        print("  等待扫码...\n")
 
+        scanned_printed = False
+        refresh_count = 0
         deadline = time.time() + QR_LOGIN_TIMEOUT_S
-        while time.time() < deadline and not self._stop_event.is_set():
+
+        while not self._stop_event.is_set():
+            if time.time() >= deadline:
+                logger.warning(f"[iLink] QR login timed out after {QR_LOGIN_TIMEOUT_S}s")
+                return {}
+
             try:
-                status = api.poll_qr_status(qrcode)
+                status_resp = api.poll_qr_status(qrcode)
             except Exception as e:
                 logger.warning(f"[iLink] QR poll error: {e}")
                 time.sleep(2)
                 continue
-            st = status.get("status", "")
-            if st == "scanned":
-                logger.info("[iLink] QR scanned, waiting confirmation...")
-            elif st == "ok" or status.get("token"):
-                tok = status.get("token", "")
-                if tok:
-                    return {"token": tok, "base_url": status.get("base_url", base_url)}
-            elif st == "expired":
-                logger.warning("[iLink] QR expired")
-                return {}
-            time.sleep(1)
+
+            status = status_resp.get("status", "wait")
+
+            if status == "wait":
+                pass
+            elif status == "scaned":  # 原版 iLink 拼写就是这样（少一个 n）
+                if not scanned_printed:
+                    print("  已扫码，请在手机上确认...")
+                    scanned_printed = True
+            elif status == "expired":
+                refresh_count += 1
+                if refresh_count >= QR_MAX_REFRESHES:
+                    logger.warning(f"[iLink] QR refreshed {QR_MAX_REFRESHES}x, giving up")
+                    return {}
+                print(f"  二维码已过期，正在刷新（{refresh_count}/{QR_MAX_REFRESHES}）...")
+                try:
+                    qr_resp = api.fetch_qr_code()
+                    qrcode = qr_resp.get("qrcode", "")
+                    qrcode_url = qr_resp.get("qrcode_img_content", "")
+                    scanned_printed = False
+                    _print_qr(qrcode_url)
+                except Exception as e:
+                    logger.error(f"[iLink] QR refresh failed: {e}")
+                    return {}
+            elif status == "confirmed":
+                bot_token = status_resp.get("bot_token", "")
+                bot_id = status_resp.get("ilink_bot_id", "")
+                result_base_url = status_resp.get("baseurl", base_url)
+                if not bot_token or not bot_id:
+                    logger.error("[iLink] confirmed but missing token/bot_id")
+                    return {}
+                print(f"\n  ✅ 微信登录成功！bot_id={bot_id}")
+                logger.info(f"[iLink] login confirmed: bot_id={bot_id}")
+                return {"token": bot_token, "base_url": result_base_url}
+
+            self._stop_event.wait(1)
+
         return {}
 
     # ── 长轮询 ─────────────────────────────────────────────────────────────
