@@ -162,31 +162,36 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
         """微信发"重启"时触发：先回执 → 延迟 3 秒 → os._exit(0)。
         .bat 包装器检测到正常退出后自动重启 uvicorn。
         """
+        bat_loop_env = os.getenv("AI_NEWS_BAT_LOOP")
+        logger.warning(
+            f"[wechat-dispatch] _handle_restart called by {msg.from_user_id}, "
+            f"AI_NEWS_BAT_LOOP={bat_loop_env!r}"
+        )
+
         # 关键安全检查：必须由 start_ai_news.bat 启动（它会设这个环境变量）
-        # 否则 os._exit 会直接杀掉进程，bot 永远死掉，没人能再叫醒它
-        if os.getenv("AI_NEWS_BAT_LOOP") != "1":
-            channel.send_text(
+        if bat_loop_env != "1":
+            ok = channel.send_text(
                 msg.from_user_id,
-                "⚠️ 检测到你**没用 start_ai_news.bat 启动**。\n\n"
-                "现在直接重启会让 bot **彻底退出且不会自动起来**——\n"
+                "⚠️ 检测到你没用 start_ai_news.bat 启动。\n\n"
+                "现在直接重启会让 bot 彻底退出且不会自动起来——\n"
                 "因为外层没有循环可以接管。\n\n"
                 "正确做法：\n"
                 "1. 按 Ctrl+C 停掉当前 uvicorn\n"
                 "2. 双击 scripts/start_ai_news.bat 启动\n"
-                "3. 之后再发\"重启\"才能自动循环\n\n"
-                "如果你确认想直接退出 bot 不再启动，发 \"强制重启\""
+                "3. 之后再发重启才能自动循环\n\n"
+                "如果你确认想直接退出 bot 不再启动，发 强制重启"
             )
+            logger.warning(f"[wechat-dispatch] safety reject; send ok={ok}")
             return
 
-        if msg.is_voice:
-            channel.send_text(msg.from_user_id, f"🎤 我听到：{msg.text}\n♻️ 收到，3 秒后重启…")
-        else:
-            channel.send_text(msg.from_user_id, "♻️ 收到，3 秒后重启…")
+        ack = (f"🎤 我听到：{msg.text}\n♻️ 收到，3 秒后重启…"
+               if msg.is_voice else "♻️ 收到，3 秒后重启…")
+        ok = channel.send_text(msg.from_user_id, ack)
+        logger.warning(f"[wechat-dispatch] restart ack send ok={ok}")
 
         def _delayed_exit():
             time.sleep(3)
-            logger.warning("[wechat-dispatch] self-restart triggered, exiting")
-            # 用 os._exit(0) 而非 sys.exit()，绕开 uvicorn 的 graceful shutdown
+            logger.warning("[wechat-dispatch] self-restart triggered, exiting NOW")
             os._exit(0)
 
         threading.Thread(target=_delayed_exit, daemon=True, name="self-restart").start()
