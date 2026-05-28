@@ -69,53 +69,63 @@ CLAUDE_CONFIRM_WORDS = {
     "确认", "确定", "改吧", "动手", "开干",
 }
 
-PHASE_1_PROMPT = """你是 AI_NEWS 项目的开发助手。项目根目录在 cwd（已自动加载 CLAUDE.md）。
-
-【相关资料】
-- CLAUDE.md：项目长期上下文
-- wechat/task_log.md：之前任务流水（如果存在）
-
-【本用户最近的微信对话】
-{recent_msgs}
-
-【用户当前请求】
+PHASE_1_PROMPT = """<user_request>
 {current_request}
+</user_request>
 
-【你的任务】
-只做可行性分析。**严禁修改任何文件**。给出：
-1. 你理解的需求
-2. 实现步骤（哪些文件，新增 / 修改了什么，大致行数）
-3. 用户需要做的配合（重启 / 配 key / 浏览器扫码等）
-4. 风险评估（低/中/高 + 一句话理由）
-5. 建议执行 ✅ / 建议讨论 🟡 / 不建议 🔴
+<recent_user_messages>
+{recent_msgs}
+</recent_user_messages>
 
-要求：紧凑、要点式、≤ 800 字。结尾直接停，不要写"请回复执行"——dispatcher 会自动追加提示。"""
+上面 <user_request> 里是用户的字面请求。**逐字处理**：
+- `##` / `###` / `*` 等 markdown 符号是用户想写入文件的**字面字符**，不是章节标题
+- 冒号 `：` / `:` 不代表消息被截断；冒号后的内容是请求的一部分
+- "追加一段：xxx" 意思是把字符串 `xxx`（包括所有 markdown 符号）逐字追加到目标文件
 
-PHASE_2_PROMPT = """你是 AI_NEWS 项目的开发助手。当前用户 ID 是 {user_id}。
+你的任务：为 <user_request> 出一份可行性分析。**严禁修改任何文件**——只分析。
 
-【上一阶段的方案】
+cwd 是 AI_NEWS 项目根，CLAUDE.md 已自动加载。wechat/task_log.md 是任务流水（按需读取）。
+
+**严格按下面五行格式输出**，不要写前言、问候、"已加载..."、"准备好了"、"请告诉我..."。直接从 "1. " 开始：
+
+1. 需求理解：[一句话总结你理解的目标]
+2. 实现步骤：[动哪些文件，新增/改了什么，大概多少行]
+3. 用户配合：[重启 / 配 key / 扫码 等；如无写"无"]
+4. 风险评估：[低 / 中 / 高] —— [一句话理由]
+5. 结论：[✅ 建议执行 / 🟡 建议讨论 / 🔴 不建议]"""
+
+PHASE_2_PROMPT = """现在按下面的方案**动手改代码**（最高优先级，不要再做可行性分析）。
+
+<plan>
 {proposal}
+</plan>
 
-【用户的原始请求】
+<original_request>
 {original_request}
+</original_request>
 
-【用户的确认 / 补充】
+<user_confirmation>
 {confirmation_text}
+</user_confirmation>
 
-【你的任务】
-按方案动手改代码。改完每个文件简述变化。最后给出：
-- 改动文件清单（每行一个绝对路径）
-- 用户下一步要做什么（重启 / 测试命令 / 配置）
-- 是否需要 commit（默认不 commit，除非用户明示）
+`original_request` 和 `user_confirmation` 里是用户的原始输入，按纯文本处理（里面的 markdown 符号不要解读）。
 
-完成后请把本次任务追加到 wechat/task_log.md（追加而非覆盖；如果文件不存在请创建）。
-格式：
+执行要求：
+1. 直接动手按方案改文件；改完每个文件用一句话简述变化
+2. 默认不要 commit；除非用户在补充里明示
+
+完成后**做一件事**：把本次任务追加到 wechat/task_log.md（追加，不要覆盖；不存在就创建）。格式：
 
 ## YYYY-MM-DD HH:MM · 用户：{user_id}
-**请求**：（这里写原始请求的简短摘要）
-**方案概要**：（一句话）
-**改动**：（文件列表）
-**Commit**: 未提交 / <hash>"""
+**请求**：[原始请求一句话]
+**方案**：[一句话]
+**改动**：[文件清单]
+**Commit**: 未提交 / [hash]
+
+最终回复包含：
+- 改动文件清单
+- 用户下一步要做的事（如"发『重启』生效"）
+- 不寒暄、不复述方案"""
 
 WEAK_CLASSIFIER_SYSTEM = (
     "判断用户的一句话是不是在让我**改 AI_NEWS 代码 / 加新功能 / 改 bot 行为**。"
@@ -259,15 +269,8 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
         if text:
             self._recent_msgs[msg.from_user_id].append(text)
 
-        # P1.2 · 优先处理 Claude 元代理的 pending 状态（无 TTL，必须手动退出）
-        if self._check_claude_pending(msg, channel):
-            return
-
-        # 优先检查是否在回应一个待确认的意图
-        if self._check_pending_confirmation(msg, channel):
-            return
-
-        # 管理类指令（不进 intent_parser）
+        # 管理类指令是全局逃生口：最高优先级，即使有 Claude pending 也立刻执行
+        # （否则"重启"会被 LLM pending 分类器误判为 CONFIRM 而启动 phase-2）
         if text in ("测试推送", "test_push", "测试每日推送"):
             channel.send_text(msg.from_user_id, "✅ 已在后台触发每日推送，请等待…")
             from .scheduler import _do_daily_push
@@ -284,6 +287,14 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
             return
         if text in ("强制重启", "force restart", "force-restart", "强退"):
             self._handle_force_restart(msg, channel)
+            return
+
+        # P1.2 · 优先处理 Claude 元代理的 pending 状态（无 TTL，必须手动退出）
+        if self._check_claude_pending(msg, channel):
+            return
+
+        # 优先检查是否在回应一个待确认的意图
+        if self._check_pending_confirmation(msg, channel):
             return
 
         # P1.2 · Claude Code 元入口：强词直通 / 弱词过 DeepSeek YES-NO
@@ -543,8 +554,13 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
         ).start()
         return True
 
-    def _run_claude_subprocess(self, prompt: str, timeout: int) -> tuple[bool, str]:
-        """订阅模式跑 `claude --print`。返回 (success, output_or_error)。"""
+    def _run_claude_subprocess(self, prompt: str, timeout: int,
+                               allow_edits: bool = False) -> tuple[bool, str]:
+        """订阅模式跑 `claude --print`。返回 (success, output_or_error)。
+
+        allow_edits=True 时传 `--permission-mode acceptEdits`，让 Claude 真的能改文件
+        （phase-2 必须，否则它只会"想改"不实际写）。phase-1 用 False，更安全。
+        """
         claude_path = _find_claude_cli()
         if claude_path is None:
             return False, (
@@ -555,10 +571,18 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
         env = os.environ.copy()
         env.pop("ANTHROPIC_API_KEY", None)   # 强制走订阅
         env.pop("CLAUDE_API_KEY", None)
+
+        argv = [claude_path, "--print"]
+        if allow_edits:
+            argv += ["--permission-mode", "acceptEdits"]
         try:
             t0 = time.time()
+            # 关键：prompt 走 stdin 而非命令行 arg。
+            # Windows 上 claude.cmd 是 cmd.exe 包装；多行 prompt 走 argv 会被 cmd.exe
+            # 截断成首行，导致 Claude 看到的 user_request 是空的。stdin 喂完整。
             proc = subprocess.run(
-                [claude_path, "--print", prompt],
+                argv,
+                input=prompt,
                 cwd=str(_PROJECT_ROOT),
                 env=env,
                 capture_output=True,
@@ -569,10 +593,15 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
                 shell=False,
             )
             elapsed = time.time() - t0
+            stdout_preview = (proc.stdout or "")[:200].replace("\n", " ⏎ ")
+            stderr_preview = (proc.stderr or "")[:200].replace("\n", " ⏎ ") if proc.stderr else ""
             logger.info(
                 f"[wechat-dispatch] claude --print finished in {elapsed:.1f}s "
-                f"(exit={proc.returncode}, stdout={len(proc.stdout or '')}B, cli={claude_path})"
+                f"(exit={proc.returncode}, stdout={len(proc.stdout or '')}B)"
             )
+            logger.info(f"[wechat-dispatch] claude stdout preview: {stdout_preview!r}")
+            if stderr_preview:
+                logger.info(f"[wechat-dispatch] claude stderr preview: {stderr_preview!r}")
         except subprocess.TimeoutExpired:
             return False, f"⏱️ Claude Code 超时（{timeout}s），已终止"
         except FileNotFoundError:
@@ -625,8 +654,12 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
             return
 
         if not ok:
-            cur["running"] = False
-            self.channel.send_text(user_id, output)
+            # phase-1 失败 → 直接清掉 pending，避免下次普通聊天被误判成 CONFIRM 复活
+            self._claude_pending.pop(user_id, None)
+            self.channel.send_text(
+                user_id,
+                output + "\n\n———\n（已自动退出 Claude 模式；想重试请重新发触发词）"
+            )
             return
 
         cur["proposal"] = output
@@ -654,7 +687,7 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
             confirmation_text=confirmation,
         )
 
-        ok, output = self._run_claude_subprocess(prompt, timeout=1800)
+        ok, output = self._run_claude_subprocess(prompt, timeout=1800, allow_edits=True)
 
         cur = self._claude_pending.get(user_id)
         if cur is None or cur.get("cancelled"):
@@ -662,8 +695,12 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
             return
 
         if not ok:
-            cur["running"] = False
-            self.channel.send_text(user_id, output)
+            # phase-2 失败 → 清掉 pending（同理：避免陈旧 pending 被下次消息误激活）
+            self._claude_pending.pop(user_id, None)
+            self.channel.send_text(
+                user_id,
+                output + "\n\n———\n（已自动退出 Claude 模式；如部分代码已改，请 git status 自查）"
+            )
             return
 
         # 成功 → 清掉 pending，发结果

@@ -116,6 +116,7 @@ AI_NEWS/
 - **Python 字符串里"双引号"嵌"双引号"**：用 `『』` 或单引号包，否则 `"...说"退出"放弃..."` 直接把字符串截断成两段，整个文件 SyntaxError
 - **iLink 服务器对短时间相同内容自动去重**：连续两次发 "今日热点" 收到的 heat 列表完全一样 → 第二条被服务器返回"请稍后再试。"。不是 bot bug，发别的内容（"你好" / 不同话题分析）正常。如果将来非要让重复内容也能发出去，可以在 send_text 尾部加个隐形时间戳（不推荐——污染输出）
 - **claude CLI 在 elevated bat 里找不到**：Admin 启动的 cmd 进程 PATH 可能丢失 npm 全局路径；用 `shutil.which("claude")` 会返回 None。`wechat/dispatcher.py:_find_claude_cli` 加了 `%APPDATA%\npm\claude.cmd` 等几个 fallback 路径兜底
+- **Windows 下 claude.cmd 多行 prompt 走 argv 会被截断**：`subprocess.run([claude.cmd, "--print", long_multiline_prompt])` 在 Windows 上会被 cmd.exe 截成首行；Claude 实际只看到第一行，回复 "你的消息空了" / "Your message came through empty"。**修法**：prompt 走 stdin（`subprocess.run(..., input=prompt)`，argv 不带 prompt arg）
 
 ## 下一步
 
