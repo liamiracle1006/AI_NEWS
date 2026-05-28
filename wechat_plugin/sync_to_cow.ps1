@@ -16,6 +16,7 @@ $files = @(
     "ai_news.py",
     "intent_parser.py",
     "formatter.py",
+    "renderer.py",
     "scheduler.py",
     "config.json.template",
     "README.md"

@@ -171,7 +171,8 @@ def format_help() -> str:
         "📊 深度分析\n"
         "  · 分析以色列 / 分析加沙\n"
         "  · 加沙本周分析 / 本周以色列\n"
-        "  · 在指令后加'图片'可获得海报版\n\n"
+        "  · 在指令后加 '图片' → 截图版（HTML 美化）\n"
+        "  · 在指令后加 'PDF' / '报告' → PDF 完整版\n\n"
         "🌡️ 全球热度\n"
         "  · 今日热点 / 热度榜\n\n"
         "📰 单国文章\n"
@@ -226,9 +227,45 @@ def _wrap_text(text: str, width: int) -> list[str]:
     return out
 
 
+# Emoji → 纯文字 token，渲染图片时替换（普通字体不含 emoji 字形会变豆腐块）。
+# 选用方括号包裹，让标题在 PNG 里仍然醒目可辨识。
+_EMOJI_TO_TEXT_TITLE = {
+    "🗞️": "■ ", "🌡️": "■ ", "📰": "■ ",
+    "📚": "■ ", "🤖": "■ ",
+}
+_EMOJI_TO_TEXT_SECTION = {
+    "✅": "● ", "⚔️": "● ", "🕳️": "● ",
+    "👤": "● ", "🕰️": "● ", "⏱️": "● ",
+    "📊": "  ", "💬": "  ", "📡": "  ", "📭": "  ",
+}
+_EMOJI_TO_TEXT_INLINE = {
+    "🔍": "[查] ", "🔗": "[链接] ", "⚠️": "[!] ",
+    "•": "·", "→": "→", "↳": "→",
+}
+
+
+def _strip_emojis_for_image(text: str) -> tuple[str, set[str], set[str]]:
+    """把 emoji 换成纯文字 token。返回 (新文本, 标题行起始词集合, 章节行起始词集合)。"""
+    title_starts = set()
+    section_starts = set()
+    for e, t in _EMOJI_TO_TEXT_TITLE.items():
+        if e in text:
+            text = text.replace(e, t)
+            title_starts.add(t.strip())
+    for e, t in _EMOJI_TO_TEXT_SECTION.items():
+        if e in text:
+            text = text.replace(e, t)
+            if t.strip():
+                section_starts.add(t.strip())
+    for e, t in _EMOJI_TO_TEXT_INLINE.items():
+        text = text.replace(e, t)
+    return text, title_starts, section_starts
+
+
 def render_analysis_card(result: dict, topic: str) -> bytes:
     """渲染一张分析结果卡片，返回 PNG bytes。"""
     text = format_analysis(result, topic)
+    text, title_starts, section_starts = _strip_emojis_for_image(text)
     lines = _wrap_text(text, width=36)
 
     line_height = 32
@@ -248,11 +285,13 @@ def render_analysis_card(result: dict, topic: str) -> bytes:
 
     y = padding
     for line in lines:
-        # 根据前缀挑字体/颜色
-        if line.startswith(("🗞️", "🌡️", "📰", "📚", "🤖")):
+        stripped = line.lstrip()
+        # 标题（项目名 / 模块大类）→ 深色大字
+        if any(stripped.startswith(t) for t in title_starts):
             draw.text((padding, y), line, font=font_h1, fill="#1f2937")
             y += line_height + 4
-        elif line.startswith(("✅", "⚔️", "🕳️", "👤", "🕰️", "⏱️", "📊", "💬", "📡", "📭")):
+        # 章节小标题 → 蓝色大字
+        elif any(stripped.startswith(s) for s in section_starts):
             draw.text((padding, y), line, font=font_h1, fill="#2563eb")
             y += line_height
         else:

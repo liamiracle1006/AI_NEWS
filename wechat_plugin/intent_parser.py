@@ -64,14 +64,16 @@ class Intent:
     country: Optional[str] = None       # for articles: English country name
     country_zh: Optional[str] = None    # for articles: Chinese display name
     week: bool = False
-    image: bool = False                 # 是否要图片输出
+    image: bool = False                 # 是否要 PNG 截图输出
+    pdf: bool = False                   # 是否要 PDF 报告输出
 
 
 # ─── 各种触发词 ──────────────────────────────────────────────────────────────
 
 ANALYZE_VERBS = ("分析", "深度分析", "解读")
 WEEK_HINTS = ("本周", "这周", "近一周", "近七天", "7天", "一周")
-IMAGE_HINTS = ("图片", "图卡", "海报", "图表")
+IMAGE_HINTS = ("图片", "图卡", "海报", "图表", "截图")
+PDF_HINTS = ("pdf", "PDF", "报告", "完整版", "详细版")
 HEAT_HINTS = ("热点", "热度榜", "今日热点", "新闻热度", "全球热度")
 ARTICLES_VERBS = ("新闻", "报道", "看新闻", "看看")
 HELP_HINTS = ("帮助", "怎么用", "指令", "menu", "help")
@@ -95,6 +97,9 @@ def parse_intent(text: str) -> Optional[Intent]:
     if "历史" in s and ("简报" in s or "分析" in s):
         return Intent(action="brief_list")
 
+    want_pdf = any(h in s for h in PDF_HINTS)
+    want_image = any(h in s for h in IMAGE_HINTS)
+
     # 4. 深度分析（关键词 + verb）
     if any(v in s for v in ANALYZE_VERBS):
         keyword = _extract_keyword(s, ANALYZE_VERBS)
@@ -103,7 +108,8 @@ def parse_intent(text: str) -> Optional[Intent]:
                 action="analyze",
                 keyword=COUNTRY_ALIASES.get(keyword, keyword),
                 week=any(h in s for h in WEEK_HINTS),
-                image=any(h in s for h in IMAGE_HINTS),
+                image=want_image,
+                pdf=want_pdf,
             )
 
     # 5. "X 新闻" / "X 本周分析" / "X 今天" — 简写
@@ -123,7 +129,8 @@ def parse_intent(text: str) -> Optional[Intent]:
                     action="analyze",
                     keyword=alias,
                     week=True,
-                    image=any(h in s for h in IMAGE_HINTS),
+                    image=want_image,
+                    pdf=want_pdf,
                 )
 
     return None
@@ -135,7 +142,7 @@ def _extract_keyword(s: str, verbs: tuple) -> Optional[str]:
     # 先替换长触发词，避免 '分析' 先替换导致 '深度分析' 残留 '深度'
     for v in sorted(verbs, key=len, reverse=True):
         rest = rest.replace(v, " ")
-    for h in sorted(WEEK_HINTS + IMAGE_HINTS, key=len, reverse=True):
+    for h in sorted(WEEK_HINTS + IMAGE_HINTS + PDF_HINTS, key=len, reverse=True):
         rest = rest.replace(h, " ")
     # 留下的连续中文/英文/数字片段
     m = re.search(r"[一-鿿]+|[A-Za-z][A-Za-z\s]+", rest)

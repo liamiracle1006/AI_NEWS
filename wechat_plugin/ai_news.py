@@ -11,6 +11,7 @@ import json
 import os
 import threading
 import time
+import urllib.parse
 from typing import Optional
 
 import requests
@@ -30,6 +31,7 @@ from .formatter import (
     render_analysis_card,
 )
 from .intent_parser import COUNTRY_ALIASES, Intent, parse_intent
+from .renderer import is_available as renderer_available, render_brief_png, render_brief_pdf, write_pdf_to_temp
 from .scheduler import start_scheduler
 
 
@@ -121,17 +123,22 @@ class AINews(Plugin):
             self._send_text(e_context, f"❌ 拉取文章失败：{e}")
 
     def _handle_analyze(self, e_context: EventContext, intent: Intent):
-        # 立即回个"分析中"
+        # 立即回个"分析中"（同步 reply 走 e_context，这一条用户先收到）
         ack = f"🔍 正在分析「{intent.keyword.split('|')[0]}」"
         if intent.week:
             ack += "（本周综合）"
         ack += "，预计 2–5 分钟，请稍候…"
         self._send_text(e_context, ack)
 
-        # 起后台线程跑分析
+        # 关键：原 e_context 在同步 handler 返回后就消费完了，
+        # 后续异步推送必须直接调 channel.send()，不能再改 e_context。
+        # 把 channel + context 捕获进闭包传给后台线程。
+        channel = e_context["channel"]
+        context = e_context["context"]
+
         threading.Thread(
-            target=self._run_analyze_and_reply,
-            args=(intent, e_context),
+            target=self._run_analyze_and_push,
+            args=(intent, channel, context),
             daemon=True,
             name="AINews-analyze",
         ).start()
@@ -139,19 +146,68 @@ class AINews(Plugin):
         # 拦截，不走默认 LLM
         e_context.action = EventAction.BREAK_PASS
 
-    def _run_analyze_and_reply(self, intent: Intent, e_context: EventContext):
+    def _run_analyze_and_push(self, intent: Intent, channel, context):
+        """后台线程：跑完分析后直接 channel.send()，绕开 EventContext。"""
         try:
-            result, brief_id = self.run_analyze_blocking(intent.keyword, week_mode=intent.week)
+            result, _job_id = self.run_analyze_blocking(intent.keyword, week_mode=intent.week)
+            # brief_id 是文件名 stem（如 "Israel_以色列_20260528_1245"），由后端在保存时写入 result。
+            # 区别于 job_id（任务内存 UUID，无法用于 /briefs/{id} 路由）。
+            brief_id = result.get("_brief_id")
             display_topic = intent.keyword.split("|")[0]
-            if intent.image:
-                png = render_analysis_card(result, display_topic)
-                self._send_image(e_context, png)
+
+            # 渲染优先级：PDF > 图片 > 文本
+            if intent.pdf:
+                self._send_pdf(channel, context, brief_id, display_topic)
+            elif intent.image:
+                self._send_image_for_brief(channel, context, brief_id, display_topic, result)
             else:
                 text = format_analysis(result, display_topic, brief_id)
-                self._send_text(e_context, text)
+                channel.send(Reply(ReplyType.TEXT, text), context)
         except Exception as e:
             logger.exception(f"[AINews] analyze failed: {e}")
-            self._send_text(e_context, f"❌ 分析失败：{e}")
+            try:
+                channel.send(Reply(ReplyType.TEXT, f"❌ 分析失败：{e}"), context)
+            except Exception:
+                pass
+
+    def _brief_render_url(self, brief_id: str) -> str:
+        """构造 /briefs/<id>/render 的 URL，brief_id 含中文需 URL 编码。"""
+        encoded = urllib.parse.quote(brief_id, safe="")
+        return f"{self.api_base}/briefs/{encoded}/render"
+
+    def _send_image_for_brief(self, channel, context, brief_id: str | None,
+                              topic: str, result: dict):
+        """发图片：优先用 Playwright 截图 HTML 报告，失败时回退到 Pillow 文字卡。"""
+        if brief_id and renderer_available():
+            try:
+                png = render_brief_png(self._brief_render_url(brief_id))
+                channel.send(Reply(ReplyType.IMAGE, io.BytesIO(png)), context)
+                return
+            except Exception as e:
+                logger.warning(f"[AINews] Playwright PNG failed, fallback to Pillow: {e}")
+        # Fallback：Pillow 简朴文字卡
+        png = render_analysis_card(result, topic)
+        channel.send(Reply(ReplyType.IMAGE, io.BytesIO(png)), context)
+
+    def _send_pdf(self, channel, context, brief_id: str | None, topic: str):
+        """发 PDF：必须有 Playwright，否则告知用户无法生成。"""
+        if not brief_id:
+            channel.send(Reply(ReplyType.TEXT, "❌ 分析未保存 brief_id，无法生成 PDF。"), context)
+            return
+        if not renderer_available():
+            channel.send(Reply(
+                ReplyType.TEXT,
+                "❌ PDF 渲染需要安装 Playwright。请在 CoW 环境运行：\n"
+                "  pip install playwright\n  playwright install chromium",
+            ), context)
+            return
+        try:
+            pdf_bytes = render_brief_pdf(self._brief_render_url(brief_id))
+            pdf_path = write_pdf_to_temp(pdf_bytes, topic)
+            channel.send(Reply(ReplyType.FILE, pdf_path), context)
+        except Exception as e:
+            logger.exception(f"[AINews] PDF render failed: {e}")
+            channel.send(Reply(ReplyType.TEXT, f"❌ PDF 生成失败：{e}"), context)
 
     # ───── HTTP 客户端 ───────────────────────────────────────────────────────
 

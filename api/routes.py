@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
 from news.config import load_config
@@ -164,18 +164,23 @@ async def _run_analysis(job_id: str, req: AnalyzeRequest, expanded_keyword: str)
             "entities": entities.model_dump(mode="json") if entities else None,
             "weekly": weekly.model_dump(mode="json") if weekly else None,
         }
-        job["result"] = result
 
         # Persist: save Markdown brief + JSON result to disk
         try:
             md = render_markdown(expanded_keyword, facts_bundle, cross, entities)
             brief_path = write_brief(Path("briefs"), expanded_keyword, md)
             json_path = brief_path.with_suffix(".json")
+            # Stash brief filename (stem) in result so callers can navigate to
+            # /api/briefs/<brief_id>/render. Saved into the JSON dump as well
+            # so downstream consumers always know which brief this came from.
+            result["_brief_id"] = brief_path.stem
             json_path.write_text(
                 json.dumps(result, ensure_ascii=False, default=str), encoding="utf-8"
             )
         except Exception as save_exc:  # noqa: BLE001
             print(f"[warn] failed to save brief: {save_exc}")
+
+        job["result"] = result
 
         job["status"] = "done"
         emit("done", f"分析完成，共 {len(facts_bundle)} 篇文章。")
@@ -311,6 +316,24 @@ async def get_brief_data(brief_id: str):
     if not json_path.exists():
         raise HTTPException(status_code=404, detail="No structured data for this brief")
     return json.loads(json_path.read_text(encoding="utf-8"))
+
+
+@router.get("/briefs/{brief_id}/render", response_class=HTMLResponse)
+async def render_brief(brief_id: str):
+    """Return a standalone HTML report for headless capture (Playwright → PNG/PDF)
+    or direct browser viewing.
+    """
+    from api.report_template import render_brief_html
+
+    json_path = Path("briefs") / f"{brief_id}.json"
+    if not json_path.exists():
+        raise HTTPException(status_code=404, detail="No structured data for this brief")
+
+    result = json.loads(json_path.read_text(encoding="utf-8"))
+    topic = result.get("cross", {}).get("topic", brief_id)
+    # Topic often has pipe-separated synonyms; show only the first
+    display_topic = topic.split("|")[0] if topic else brief_id
+    return HTMLResponse(content=render_brief_html(result, display_topic))
 
 
 # ── Geo heat map ──────────────────────────────────────────────────────────────
