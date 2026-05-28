@@ -11,10 +11,12 @@ from .routes import router
 
 # 让 news.* / wechat.* 的 logger.info / logger.warning 都能打印到终端，
 # 不然 uvicorn 默认只放它自己的 access log，应用层日志被静默吞掉。
+# force=True 是关键：覆盖 uvicorn 启动时设置的 root handlers。
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%H:%M:%S",
+    force=True,
 )
 
 log = logging.getLogger(__name__)

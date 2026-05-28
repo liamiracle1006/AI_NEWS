@@ -17,6 +17,10 @@ REM Mark this process as 'started via the bat loop' so dispatcher.py
 REM knows that os._exit(0) will be safely caught by the outer loop.
 set "AI_NEWS_BAT_LOOP=1"
 
+REM Force Python stdout/stderr to be unbuffered so we see logs immediately
+REM (Windows cmd buffers Python output very aggressively without this).
+set "PYTHONUNBUFFERED=1"
+
 REM Window title — easier to identify among many cmd windows.
 title AI_NEWS
 
@@ -43,7 +47,9 @@ echo.
 echo ================================================================
 echo  AI_NEWS uvicorn starting at %date% %time%
 echo ================================================================
-"%PY%" -m uvicorn api.main:app --port 8000 2>> "%LOG_DIR%\start.log"
+REM 不再把 stderr 重定向到日志文件，否则 uvicorn 的启动消息和 wechat
+REM 模块的 logger 全被吞到 logs\start.log 里，终端看不到任何东西。
+"%PY%" -m uvicorn api.main:app --port 8000
 
 set "EXIT_CODE=%ERRORLEVEL%"
 echo [%date% %time%] uvicorn exited code=%EXIT_CODE% >> "%LOG_DIR%\start.log"

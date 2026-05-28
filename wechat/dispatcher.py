@@ -107,7 +107,10 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
 
         text = (msg.text or "").strip()
         prefix = "🎤" if msg.is_voice else "💬"
-        logger.info(f"[wechat-dispatch] {prefix} {msg.from_user_id}: {text[:60]}")
+        # 双管齐下：logger（结构化）+ print（绕开 logging 链路，绝不会丢）
+        msg_log = f"[wechat-dispatch] {prefix} {msg.from_user_id}: {text[:60]}"
+        logger.info(msg_log)
+        print(msg_log, flush=True)
 
         # 优先检查是否在回应一个待确认的意图
         if self._check_pending_confirmation(msg, channel):
