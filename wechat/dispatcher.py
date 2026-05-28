@@ -48,12 +48,19 @@ class Dispatcher:
         "回复长度建议 100-300 字。"
     )
 
+    # 确认类回复（"是"/"对"/...）映射成布尔
+    CONFIRM_YES = {"是", "对", "好", "ok", "OK", "确认", "yes", "Y", "y", "1", "嗯", "确定"}
+    CONFIRM_NO = {"不", "否", "no", "N", "n", "0", "取消", "算了", "不要"}
+    PENDING_TTL_SECONDS = 120
+
     def __init__(self, channel: IlinkChannel, config: IlinkConfig):
         self.channel = channel
         self.config = config
         self.api_base = config.api_base
         # LLM provider 延迟初始化，避免启动时阻塞
         self._llm_provider = None
+        # 待确认的意图（每个 user_id 一条）：{user_id: {"intent": Intent, "expires": ts}}
+        self._pending: dict[str, dict] = {}
         channel.set_dispatcher(self._dispatch)
 
     def _get_llm(self):
@@ -80,6 +87,10 @@ class Dispatcher:
         text = (msg.text or "").strip()
         prefix = "🎤" if msg.is_voice else "💬"
         logger.info(f"[wechat-dispatch] {prefix} {msg.from_user_id}: {text[:60]}")
+
+        # 优先检查是否在回应一个待确认的意图
+        if self._check_pending_confirmation(msg, channel):
+            return
 
         # 管理类指令（不进 intent_parser）
         if text in ("测试推送", "test_push", "测试每日推送"):
@@ -115,6 +126,130 @@ class Dispatcher:
             self._handle_articles(msg, intent)
         elif intent.action == "analyze":
             self._handle_analyze(msg, intent)
+        elif intent.action == "confirm_analyze":
+            self._handle_confirm_analyze(msg, intent)
+
+    # ── 确认状态机 ──────────────────────────────────────────────────────────
+
+    def _check_pending_confirmation(self, msg: IncomingMessage, channel: IlinkChannel) -> bool:
+        """如果当前消息是对某个待确认意图的回复，处理它并返回 True。否则 False。"""
+        pending = self._pending.get(msg.from_user_id)
+        if not pending:
+            return False
+        if pending["expires"] < time.time():
+            # 过期了
+            del self._pending[msg.from_user_id]
+            return False
+
+        text = (msg.text or "").strip()
+
+        # 用户取消
+        if text in self.CONFIRM_NO:
+            del self._pending[msg.from_user_id]
+            channel.send_text(msg.from_user_id, "✅ 已取消")
+            return True
+
+        # 用户确认
+        if text in self.CONFIRM_YES:
+            intent = pending["intent"]
+            del self._pending[msg.from_user_id]
+            self._handle_analyze(msg, intent)
+            return True
+
+        # 用户从多选项里选了一个（"以色列" / "1" 等）
+        if "options" in pending:
+            opts = pending["options"]
+            # 数字选项
+            if text.isdigit():
+                idx = int(text) - 1
+                if 0 <= idx < len(opts):
+                    zh = opts[idx]
+                    intent = self._make_analyze_intent(zh, pending)
+                    del self._pending[msg.from_user_id]
+                    self._handle_analyze(msg, intent)
+                    return True
+            # 文本选项（直接说"以色列"）
+            for zh in opts:
+                if zh in text:
+                    intent = self._make_analyze_intent(zh, pending)
+                    del self._pending[msg.from_user_id]
+                    self._handle_analyze(msg, intent)
+                    return True
+
+        # 没识别为确认/取消 → 视为新对话，丢弃 pending
+        del self._pending[msg.from_user_id]
+        return False
+
+    def _make_analyze_intent(self, zh: str, pending: dict) -> Intent:
+        return Intent(
+            action="analyze",
+            keyword=COUNTRY_ALIASES.get(zh, zh),
+            country_zh=zh,
+            week=pending.get("week", False),
+            image=pending.get("image", False),
+            pdf=pending.get("pdf", False),
+        )
+
+    def _handle_confirm_analyze(self, msg: IncomingMessage, intent: Intent):
+        """收到歧义的分析请求 → 发确认提示，记录到 _pending。"""
+        from .intent_parser import COUNTRY_ALIASES as _CA  # 避免循环
+
+        if intent.multi_options:
+            # 多个国家命中：列选项让用户选
+            opts = intent.multi_options
+            lines = [f"🤔 你想分析哪个？（你说了：「{intent.raw_text}」）", ""]
+            for i, zh in enumerate(opts, 1):
+                lines.append(f"{i}. {zh}")
+            lines.append("")
+            lines.append("回复数字 (1/2/..) 或国家名 / '取消'")
+            self.channel.send_text(msg.from_user_id, "\n".join(lines))
+            self._pending[msg.from_user_id] = {
+                "intent": None,  # 取决于用户选
+                "options": opts,
+                "week": intent.week,
+                "image": intent.image,
+                "pdf": intent.pdf,
+                "expires": time.time() + self.PENDING_TTL_SECONDS,
+            }
+            return
+
+        if intent.keyword:
+            # 长 keyword 提取出来了但不在已知国家里：建议简化
+            # 同时尝试 fuzzy 匹配第一个可能的国家
+            fuzzy_candidates = [zh for zh in _CA if zh in intent.keyword]
+            if fuzzy_candidates:
+                zh = fuzzy_candidates[0]
+                self.channel.send_text(
+                    msg.from_user_id,
+                    f"🤔 你说的「{intent.raw_text}」我没完全理解。\n"
+                    f"是想分析「{zh}」吗？\n\n"
+                    f"回复 '是' 确认 / '不' 取消 / 或者直接说"
+                )
+                resolved = Intent(
+                    action="analyze",
+                    keyword=_CA[zh],
+                    country_zh=zh,
+                    week=intent.week,
+                    image=intent.image,
+                    pdf=intent.pdf,
+                )
+                self._pending[msg.from_user_id] = {
+                    "intent": resolved,
+                    "expires": time.time() + self.PENDING_TTL_SECONDS,
+                }
+                return
+
+        # 完全无法识别 → 给清单
+        sample = "、".join(list(_CA.keys())[:8])
+        self.channel.send_text(
+            msg.from_user_id,
+            f"🤔 没识别出具体话题。\n\n"
+            f"试试这种格式：\n"
+            f"  · 分析以色列\n"
+            f"  · 加沙本周分析\n"
+            f"  · 分析<国家名> 图片\n\n"
+            f"支持的国家：{sample}... (共 {len(_CA)} 个)"
+        )
 
     # ── 闲聊兜底（无指令命中时） ────────────────────────────────────────────
 

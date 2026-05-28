@@ -59,13 +59,16 @@ COUNTRY_ZH_TO_EN = {v: k for k, v in COUNTRY_ZH.items()}
 
 @dataclass
 class Intent:
-    action: str  # "analyze" | "heat" | "articles" | "help" | "brief_list"
+    action: str  # "analyze" | "heat" | "articles" | "help" | "brief_list" | "confirm_analyze"
     keyword: Optional[str] = None       # for analyze: pipe-separated query
     country: Optional[str] = None       # for articles: English country name
     country_zh: Optional[str] = None    # for articles: Chinese display name
     week: bool = False
     image: bool = False                 # 是否要 PNG 截图输出
     pdf: bool = False                   # 是否要 PDF 报告输出
+    # confirm_analyze 用：歧义时给用户选项
+    multi_options: list[str] = None     # 多个国家命中时，让用户选哪个
+    raw_text: str = ""                  # 原始文本，确认提示中显示
 
 
 # ─── 各种触发词 ──────────────────────────────────────────────────────────────
@@ -102,15 +105,53 @@ def parse_intent(text: str) -> Optional[Intent]:
 
     # 4. 深度分析（关键词 + verb）
     if any(v in s for v in ANALYZE_VERBS):
-        keyword = _extract_keyword(s, ANALYZE_VERBS)
-        if keyword:
+        week = any(h in s for h in WEEK_HINTS)
+
+        # 策略一：扫文本里有没有已知国家名（不管位置，"分析以色列的国际形势" 也能命中）
+        matched_countries = [zh for zh in COUNTRY_ALIASES if zh in s]
+        if len(matched_countries) == 1:
+            zh = matched_countries[0]
             return Intent(
                 action="analyze",
-                keyword=COUNTRY_ALIASES.get(keyword, keyword),
-                week=any(h in s for h in WEEK_HINTS),
+                keyword=COUNTRY_ALIASES[zh],
+                country_zh=zh,
+                week=week,
                 image=want_image,
                 pdf=want_pdf,
             )
+        if len(matched_countries) > 1:
+            # 多个国家命中 → 让用户确认选哪个
+            return Intent(
+                action="confirm_analyze",
+                multi_options=matched_countries,
+                week=week,
+                image=want_image,
+                pdf=want_pdf,
+                raw_text=s,
+            )
+
+        # 策略二：fallback 自由提取（用户可能在分析非国家话题，比如"分析比特币"）
+        keyword = _extract_keyword(s, ANALYZE_VERBS)
+        if keyword:
+            # 短词（< 6 字）直接尝试分析；长词大概率是"分析XX的YY"这种歧义表述
+            if len(keyword) <= 6:
+                return Intent(
+                    action="analyze",
+                    keyword=COUNTRY_ALIASES.get(keyword, keyword),
+                    week=week,
+                    image=want_image,
+                    pdf=want_pdf,
+                )
+            else:
+                # 长词 → 不确定，让用户确认或重新表述
+                return Intent(
+                    action="confirm_analyze",
+                    keyword=keyword,
+                    week=week,
+                    image=want_image,
+                    pdf=want_pdf,
+                    raw_text=s,
+                )
 
     # 5. "X 新闻" / "X 本周分析" / "X 今天" — 简写
     for zh, alias in COUNTRY_ALIASES.items():
