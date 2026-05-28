@@ -20,3 +20,7 @@ briefs/
 
 # Daily article cache (runtime data, can be large)
 cache/
+
+# WeChat plugin user-specific config (only template is tracked)
+wechat_plugin/config.json
+

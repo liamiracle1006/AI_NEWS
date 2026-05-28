@@ -1,0 +1,18 @@
+{
+  "api_base": "http://localhost:8000/api",
+  "whitelist_nicknames": [],
+  "comment_whitelist": "若为空数组则不限制；建议填上你的小号自己的昵称或好友昵称",
+  "daily_push_enabled": true,
+  "daily_push_cron_hour": 8,
+  "daily_push_cron_minute": 0,
+  "daily_push_top_n": 3,
+  "daily_push_target": "",
+  "hot_alert_enabled": true,
+  "hot_alert_interval_minutes": 60,
+  "hot_alert_min_count": 5,
+  "hot_alert_jump_ratio": 3.0,
+  "hot_alert_target": "",
+  "analyze_max_articles": 10,
+  "analyze_timeout_seconds": 600,
+  "image_mode_default": false
+}
