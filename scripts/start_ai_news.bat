@@ -1,37 +1,35 @@
 @echo off
-REM 启动 AI_NEWS（后端 + 内嵌微信守护进程）。
+REM Launch AI_NEWS backend + embedded WeChat (iLink) daemon.
 REM
-REM 双击直接运行；或丢进 shell:startup 实现 Windows 开机自启。
+REM Usage: double-click this file, OR put a shortcut into shell:startup
+REM        for Windows boot-time auto-start.
 REM
-REM 自启用法：
-REM   1. Win+R → shell:startup → 回车（打开 Windows 启动文件夹）
-REM   2. 把本文件的快捷方式（不是文件本身）拖进去
-REM   3. 下次开机会自动启动后端
+REM Infinite-loop wrapper: when uvicorn exits, this script automatically
+REM restarts it. This is required for the WeChat "restart" command to
+REM work end-to-end (process exits cleanly, then the loop respawns it).
 REM
-REM 永循环：uvicorn 退出后自动重启（用于微信里发"重启"指令的自我重启）。
-REM 想真正停掉：在黑窗口里连按两次 Ctrl+C（第一次中断 uvicorn，第二次跳出 .bat 循环）。
+REM To truly STOP: press Ctrl+C twice. First press kills uvicorn,
+REM second press breaks out of this batch loop.
 
 setlocal enabledelayedexpansion
 
-REM 用 UTF-8 避免中文 echo 乱码
-chcp 65001 >nul
-
-REM 让 Python 进程知道自己是在 .bat 永循环里跑（重启时安全启用）
+REM Mark this process as 'started via the bat loop' so dispatcher.py
+REM knows that os._exit(0) will be safely caught by the outer loop.
 set "AI_NEWS_BAT_LOOP=1"
 
-REM 把窗口标题改成可识别的，方便你区分多个 cmd
-title AI_NEWS · start_ai_news.bat
+REM Window title — easier to identify among many cmd windows.
+title AI_NEWS
 
-REM ── 项目根目录（如果以后挪了路径只改这里） ──────────────────────────────
+REM Project root — change here if you move the repo.
 set "PROJECT_DIR=c:\Users\wangzy\Desktop\hobby\AI_NEWS"
 
-REM ── 日志目录（确保存在） ────────────────────────────────────────────────
+REM Log dir
 set "LOG_DIR=%PROJECT_DIR%\logs"
 if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
 
-REM ── 进入项目 + 用 venv 的 python 跑 uvicorn ─────────────────────────────
 cd /d "%PROJECT_DIR%"
 
+REM Prefer venv python if available
 if exist "%PROJECT_DIR%\.venv\Scripts\python.exe" (
     set "PY=%PROJECT_DIR%\.venv\Scripts\python.exe"
 ) else (
@@ -41,12 +39,12 @@ if exist "%PROJECT_DIR%\.venv\Scripts\python.exe" (
 :loop
 echo. >> "%LOG_DIR%\start.log"
 echo [%date% %time%] starting AI_NEWS uvicorn... >> "%LOG_DIR%\start.log"
+echo.
 echo ================================================================
 echo  AI_NEWS uvicorn starting at %date% %time%
 echo ================================================================
 "%PY%" -m uvicorn api.main:app --port 8000 2>> "%LOG_DIR%\start.log"
 
-REM uvicorn 退出码：0 = 正常退出（"重启"指令触发）；非 0 = 崩溃
 set "EXIT_CODE=%ERRORLEVEL%"
 echo [%date% %time%] uvicorn exited code=%EXIT_CODE% >> "%LOG_DIR%\start.log"
 
@@ -56,13 +54,12 @@ echo  uvicorn exited with code %EXIT_CODE% at %date% %time%
 echo ================================================================
 
 if "%EXIT_CODE%"=="0" (
-    echo  正常退出，3 秒后自动重启...
+    echo Clean exit ^(restart triggered^). Respawning in 3 seconds...
     timeout /t 3 /nobreak >nul
     goto loop
 )
 
-REM 非 0 退出 = 崩溃，给个 10 秒回看时间再重启，避免无限崩溃循环吃 CPU
-echo  非 0 退出（崩溃），10 秒后自动重启...
+echo Crash exit. Respawning in 10 seconds to avoid tight crash loop...
 timeout /t 10 /nobreak >nul
 goto loop
 
