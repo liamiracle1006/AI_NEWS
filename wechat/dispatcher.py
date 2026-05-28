@@ -39,11 +39,35 @@ class Dispatcher:
     原因：复用现有的 job 队列 / SSE / brief 持久化逻辑，避免重写。
     """
 
+    # 闲聊兜底用的 LLM system prompt
+    CHAT_FALLBACK_SYSTEM = (
+        "你是一个微信聊天助手，回答简洁、口语化、用中文。"
+        "如果用户问的话题涉及国际新闻 / 国家局势 / 时事分析，"
+        "提醒他可以发 '今日热点' 看热度榜，或发 '分析<国家>' 做深度分析。"
+        "不要回答涉及金融投资具体买卖的建议。"
+        "回复长度建议 100-300 字。"
+    )
+
     def __init__(self, channel: IlinkChannel, config: IlinkConfig):
         self.channel = channel
         self.config = config
         self.api_base = config.api_base
+        # LLM provider 延迟初始化，避免启动时阻塞
+        self._llm_provider = None
         channel.set_dispatcher(self._dispatch)
+
+    def _get_llm(self):
+        """懒加载 LLM provider（用 AI_NEWS 的 DeepSeek 配置）。"""
+        if self._llm_provider is None:
+            try:
+                from news.config import load_config
+                from news.llm import get_provider
+                cfg = load_config()
+                self._llm_provider = get_provider(cfg)
+            except Exception as e:
+                logger.warning(f"[wechat-dispatch] LLM provider init failed: {e}")
+                self._llm_provider = False  # sentinel：不再尝试
+        return self._llm_provider if self._llm_provider else None
 
     # ── 公共入口 ───────────────────────────────────────────────────────────
 
@@ -72,16 +96,13 @@ class Dispatcher:
 
         intent = parse_intent(text)
         if intent is None:
-            # 没命中任何指令
-            if msg.is_voice:
-                # 语音消息总是给个反馈，否则用户以为 bot 没听到 / 死了
-                channel.send_text(
-                    msg.from_user_id,
-                    f"🎤 我听到：{text}\n\n"
-                    "🤖 这不在我当前能力范围内。\n"
-                    "发 '帮助' 看支持的指令清单。"
-                )
-            # 文字消息：保持静默（避免把所有闲聊都吃掉）
+            # 没命中任何确定性指令 → LLM 闲聊兜底（在后台线程，避免阻塞 poll 循环）
+            threading.Thread(
+                target=self._handle_chat_fallback,
+                args=(msg,),
+                daemon=True,
+                name="wechat-chat",
+            ).start()
             return
 
         if intent.action == "help":
@@ -94,6 +115,45 @@ class Dispatcher:
             self._handle_articles(msg, intent)
         elif intent.action == "analyze":
             self._handle_analyze(msg, intent)
+
+    # ── 闲聊兜底（无指令命中时） ────────────────────────────────────────────
+
+    def _handle_chat_fallback(self, msg: IncomingMessage):
+        """没命中指令的消息走 DeepSeek 闲聊。语音消息额外回执转录文本。"""
+        provider = self._get_llm()
+        if provider is None:
+            # LLM 不可用 → 退化为静默/提示模式
+            if msg.is_voice:
+                self.channel.send_text(
+                    msg.from_user_id,
+                    f"🎤 我听到：{msg.text}\n\n🤖 LLM 不可用，请检查 DeepSeek 配置。"
+                )
+            return
+
+        prompt = msg.text
+        # 语音消息：先回执转录，再附 LLM 回复
+        if msg.is_voice:
+            prompt = f"用户用语音说：{msg.text}"
+
+        try:
+            reply = provider.complete(
+                self.CHAT_FALLBACK_SYSTEM,
+                prompt,
+                max_tokens=600,
+                temperature=0.7,  # 闲聊用稍高 temperature 更自然
+            )
+        except Exception as e:
+            logger.exception(f"[wechat-dispatch] chat fallback failed: {e}")
+            self.channel.send_text(msg.from_user_id, f"❌ LLM 回复出错：{e}")
+            return
+
+        # 语音消息：把转录确认 + LLM 回复合并成一条
+        if msg.is_voice:
+            full_reply = f"🎤 我听到：{msg.text}\n\n🤖 {reply}"
+        else:
+            full_reply = reply
+
+        self.channel.send_text(msg.from_user_id, full_reply)
 
     # ── 分支处理 ───────────────────────────────────────────────────────────
 
