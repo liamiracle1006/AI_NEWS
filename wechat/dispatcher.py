@@ -48,6 +48,27 @@ class Dispatcher:
         "回复长度建议 100-300 字。"
     )
 
+    # LLM 意图救援：关键词匹配漏掉时让 DeepSeek 看一眼，返回结构化结果或闲聊
+    INTENT_RESCUE_SYSTEM = """\
+你是 AI_NEWS 微信助手的意图分类器。判断用户消息属于哪类，按 JSON 返回。
+AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文章、看历史简报。
+
+返回格式（只返回 JSON 一行，禁止其他文字）：
+- 想深度分析某话题（国家或事件）：{"action":"analyze","topic":"<话题>","week":false}
+- 想看全球新闻热度榜：{"action":"heat"}
+- 想看某国相关文章列表：{"action":"articles","country_zh":"<中文国名>"}
+- 想看历史已生成的分析简报：{"action":"brief_list"}
+- 想看本周综合分析：在 analyze 上加 "week":true
+- 普通聊天 / 无关问题：{"action":"chat","reply":"<你的中文回答，100-200字>"}
+
+规则：
+1. 用户问「X 怎么样 / X 局势 / X 最近的事」→ analyze topic=X
+2. 用户问「今天 / 现在 / 最近 全球热点 / 大事」→ heat
+3. 用户问「X 的新闻 / X 的报道」→ articles X
+4. 闲聊 / 问候 / 知识问答 / 跟新闻无关 → chat（自己作答）
+5. 涉及股票买卖 / 投资具体建议 → chat 但拒绝给建议
+"""
+
     # 确认类回复（"是"/"对"/...）映射成布尔
     CONFIRM_YES = {"是", "对", "好", "ok", "OK", "确认", "yes", "Y", "y", "1", "嗯", "确定"}
     CONFIRM_NO = {"不", "否", "no", "N", "n", "0", "取消", "算了", "不要"}
@@ -251,13 +272,17 @@ class Dispatcher:
             f"支持的国家：{sample}... (共 {len(_CA)} 个)"
         )
 
-    # ── 闲聊兜底（无指令命中时） ────────────────────────────────────────────
+    # ── LLM 兜底：先做意图救援，没救出来再当闲聊 ──────────────────────────
 
     def _handle_chat_fallback(self, msg: IncomingMessage):
-        """没命中指令的消息走 DeepSeek 闲聊。语音消息额外回执转录文本。"""
+        """关键词匹配未命中的消息 → 让 LLM 看一眼。
+
+        二选一：
+        1. LLM 判定是 AI_NEWS 指令意图 → 转成 Intent 走原流程
+        2. LLM 判定是闲聊 → 直接用它生成的回复
+        """
         provider = self._get_llm()
         if provider is None:
-            # LLM 不可用 → 退化为静默/提示模式
             if msg.is_voice:
                 self.channel.send_text(
                     msg.from_user_id,
@@ -265,30 +290,117 @@ class Dispatcher:
                 )
             return
 
-        prompt = msg.text
-        # 语音消息：先回执转录，再附 LLM 回复
-        if msg.is_voice:
-            prompt = f"用户用语音说：{msg.text}"
-
         try:
-            reply = provider.complete(
-                self.CHAT_FALLBACK_SYSTEM,
-                prompt,
+            raw = provider.complete(
+                self.INTENT_RESCUE_SYSTEM,
+                msg.text,
                 max_tokens=600,
-                temperature=0.7,  # 闲聊用稍高 temperature 更自然
+                temperature=0.3,
+                json_mode=True,
             )
         except Exception as e:
-            logger.exception(f"[wechat-dispatch] chat fallback failed: {e}")
-            self.channel.send_text(msg.from_user_id, f"❌ LLM 回复出错：{e}")
+            logger.exception(f"[wechat-dispatch] intent rescue failed: {e}")
+            self.channel.send_text(msg.from_user_id, f"❌ LLM 出错：{e}")
             return
 
-        # 语音消息：把转录确认 + LLM 回复合并成一条
-        if msg.is_voice:
-            full_reply = f"🎤 我听到：{msg.text}\n\n🤖 {reply}"
-        else:
-            full_reply = reply
+        # 解析 JSON
+        data = self._safe_parse_json(raw)
+        if not data:
+            # JSON 解析失败 → 当成闲聊回复
+            self._send_voice_aware(msg, raw)
+            return
 
-        self.channel.send_text(msg.from_user_id, full_reply)
+        action = data.get("action", "chat")
+        logger.info(f"[wechat-dispatch] LLM rescue: {action} {data}")
+
+        if action == "analyze":
+            topic = (data.get("topic") or "").strip()
+            week = bool(data.get("week", False))
+            if topic:
+                # 优先在 COUNTRY_ALIASES 里找匹配，否则当自由话题
+                from .intent_parser import COUNTRY_ALIASES
+                keyword = COUNTRY_ALIASES.get(topic, topic)
+                intent = Intent(
+                    action="analyze",
+                    keyword=keyword,
+                    country_zh=topic if topic in COUNTRY_ALIASES else None,
+                    week=week,
+                )
+                # 语音消息提示一下"我理解为 X"
+                if msg.is_voice:
+                    self.channel.send_text(
+                        msg.from_user_id,
+                        f"🎤 我听到：{msg.text}\n🤖 理解为：分析「{topic}」"
+                        f"{'（本周）' if week else ''}"
+                    )
+                self._handle_analyze(msg, intent)
+                return
+
+        elif action == "heat":
+            if msg.is_voice:
+                self.channel.send_text(
+                    msg.from_user_id,
+                    f"🎤 我听到：{msg.text}\n🤖 理解为：查看热度榜"
+                )
+            self._handle_heat(msg)
+            return
+
+        elif action == "articles":
+            from .intent_parser import COUNTRY_ALIASES, COUNTRY_ZH_TO_EN
+            country_zh = (data.get("country_zh") or "").strip()
+            if country_zh in COUNTRY_ALIASES:
+                intent = Intent(
+                    action="articles",
+                    country=COUNTRY_ZH_TO_EN.get(country_zh, country_zh),
+                    country_zh=country_zh,
+                    week=bool(data.get("week", False)),
+                )
+                if msg.is_voice:
+                    self.channel.send_text(
+                        msg.from_user_id,
+                        f"🎤 我听到：{msg.text}\n🤖 理解为：{country_zh} 的文章"
+                    )
+                self._handle_articles(msg, intent)
+                return
+
+        elif action == "brief_list":
+            self._handle_briefs(msg)
+            return
+
+        # action == "chat" 或者上面任何分支没拿到必要字段 → 走闲聊
+        reply = data.get("reply") or ""
+        if not reply:
+            # 没有 reply 字段，再调一次纯闲聊（极少情况）
+            try:
+                reply = provider.complete(
+                    self.CHAT_FALLBACK_SYSTEM, msg.text,
+                    max_tokens=600, temperature=0.7,
+                )
+            except Exception as e:
+                reply = f"❌ {e}"
+        self._send_voice_aware(msg, reply)
+
+    @staticmethod
+    def _safe_parse_json(raw: str):
+        import json
+        s = (raw or "").strip()
+        # 容错：偶尔模型加上 ```json 围栏
+        if s.startswith("```"):
+            s = s.strip("`")
+            if s.lower().startswith("json"):
+                s = s[4:].lstrip()
+        try:
+            return json.loads(s)
+        except Exception:
+            return None
+
+    def _send_voice_aware(self, msg: IncomingMessage, reply: str):
+        """把转录确认 + 回复合并成一条（如是语音）。"""
+        if msg.is_voice:
+            full = f"🎤 我听到：{msg.text}\n\n🤖 {reply}"
+        else:
+            full = reply
+        self.channel.send_text(msg.from_user_id, full)
 
     # ── 分支处理 ───────────────────────────────────────────────────────────
 
