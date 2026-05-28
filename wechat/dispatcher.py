@@ -128,6 +128,9 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
         if text in ("重启", "重启 bot", "重启 uvicorn", "restart", "reboot"):
             self._handle_restart(msg, channel)
             return
+        if text in ("强制重启", "force restart", "force-restart", "强退"):
+            self._handle_force_restart(msg, channel)
+            return
 
         intent = parse_intent(text)
         if intent is None:
@@ -159,19 +162,44 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
         """微信发"重启"时触发：先回执 → 延迟 3 秒 → os._exit(0)。
         .bat 包装器检测到正常退出后自动重启 uvicorn。
         """
+        # 关键安全检查：必须由 start_ai_news.bat 启动（它会设这个环境变量）
+        # 否则 os._exit 会直接杀掉进程，bot 永远死掉，没人能再叫醒它
+        if os.getenv("AI_NEWS_BAT_LOOP") != "1":
+            channel.send_text(
+                msg.from_user_id,
+                "⚠️ 检测到你**没用 start_ai_news.bat 启动**。\n\n"
+                "现在直接重启会让 bot **彻底退出且不会自动起来**——\n"
+                "因为外层没有循环可以接管。\n\n"
+                "正确做法：\n"
+                "1. 按 Ctrl+C 停掉当前 uvicorn\n"
+                "2. 双击 scripts/start_ai_news.bat 启动\n"
+                "3. 之后再发\"重启\"才能自动循环\n\n"
+                "如果你确认想直接退出 bot 不再启动，发 \"强制重启\""
+            )
+            return
+
         if msg.is_voice:
             channel.send_text(msg.from_user_id, f"🎤 我听到：{msg.text}\n♻️ 收到，3 秒后重启…")
         else:
-            channel.send_text(msg.from_user_id, "♻️ 收到，3 秒后重启…\n(用 .bat 启动才会自动重启回来)")
+            channel.send_text(msg.from_user_id, "♻️ 收到，3 秒后重启…")
 
         def _delayed_exit():
             time.sleep(3)
             logger.warning("[wechat-dispatch] self-restart triggered, exiting")
             # 用 os._exit(0) 而非 sys.exit()，绕开 uvicorn 的 graceful shutdown
-            # 因为 uvicorn 内有些线程不会响应 SIGTERM，graceful 可能挂住几十秒。
             os._exit(0)
 
         threading.Thread(target=_delayed_exit, daemon=True, name="self-restart").start()
+
+    def _handle_force_restart(self, msg: IncomingMessage, channel: IlinkChannel):
+        """用户明确"强制重启" → 直接 exit，不再警告。"""
+        channel.send_text(msg.from_user_id, "♻️ 强制退出中...")
+
+        def _delayed_exit():
+            time.sleep(2)
+            os._exit(0)
+
+        threading.Thread(target=_delayed_exit, daemon=True, name="force-exit").start()
 
     # ── 确认状态机 ──────────────────────────────────────────────────────────
 

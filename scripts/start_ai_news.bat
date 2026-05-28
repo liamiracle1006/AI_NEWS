@@ -13,6 +13,15 @@ REM 想真正停掉：在黑窗口里连按两次 Ctrl+C（第一次中断 uvico
 
 setlocal enabledelayedexpansion
 
+REM 用 UTF-8 避免中文 echo 乱码
+chcp 65001 >nul
+
+REM 让 Python 进程知道自己是在 .bat 永循环里跑（重启时安全启用）
+set "AI_NEWS_BAT_LOOP=1"
+
+REM 把窗口标题改成可识别的，方便你区分多个 cmd
+title AI_NEWS · start_ai_news.bat
+
 REM ── 项目根目录（如果以后挪了路径只改这里） ──────────────────────────────
 set "PROJECT_DIR=c:\Users\wangzy\Desktop\hobby\AI_NEWS"
 
@@ -32,20 +41,28 @@ if exist "%PROJECT_DIR%\.venv\Scripts\python.exe" (
 :loop
 echo. >> "%LOG_DIR%\start.log"
 echo [%date% %time%] starting AI_NEWS uvicorn... >> "%LOG_DIR%\start.log"
+echo ================================================================
+echo  AI_NEWS uvicorn starting at %date% %time%
+echo ================================================================
 "%PY%" -m uvicorn api.main:app --port 8000 2>> "%LOG_DIR%\start.log"
 
 REM uvicorn 退出码：0 = 正常退出（"重启"指令触发）；非 0 = 崩溃
 set "EXIT_CODE=%ERRORLEVEL%"
 echo [%date% %time%] uvicorn exited code=%EXIT_CODE% >> "%LOG_DIR%\start.log"
 
+echo.
+echo ================================================================
+echo  uvicorn exited with code %EXIT_CODE% at %date% %time%
+echo ================================================================
+
 if "%EXIT_CODE%"=="0" (
-    echo Restarting in 3 seconds...
+    echo  正常退出，3 秒后自动重启...
     timeout /t 3 /nobreak >nul
     goto loop
 )
 
 REM 非 0 退出 = 崩溃，给个 10 秒回看时间再重启，避免无限崩溃循环吃 CPU
-echo Crashed with code %EXIT_CODE%, restart in 10 seconds...
+echo  非 0 退出（崩溃），10 秒后自动重启...
 timeout /t 10 /nobreak >nul
 goto loop
 
