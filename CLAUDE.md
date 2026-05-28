@@ -90,17 +90,24 @@ AI_NEWS/
   - CoW 副本仍可作为备选（如需多 channel 时）
 - **Phase 10 P0**：语音输入（iLink `type=3` + 腾讯 ASR `voice_item.text`）+ LLM 意图救援
 - **Phase 10 P1.1**：自我重启（`scripts/start_ai_news.bat` 永循环 + dispatcher "重启" 分支 → `os._exit(0)`；`AI_NEWS_BAT_LOOP=1` 安全门）
-- **Phase 10 P1.2**：Claude Code 元入口（可行性先行的两阶段执行）
+- **Phase 10 P1.2**：Claude Code 元入口（可行性先行的两阶段执行）· commit `3489897`
   - `wechat/dispatcher.py` 加 `_claude_pending` 状态 + `_check_claude_trigger` / `_check_claude_pending` / `_run_claude_subprocess` / `_run_claude_phase1/phase2` / `_send_chunked`
   - 强词直通（"@claude / 让 claude / 新增加功能 / 给 bot 加" 等 15 个）；弱词（"帮我加/帮我做/实现一下" 等 9 个）先调 DeepSeek 一句 YES/NO
   - 白名单：`.env` 的 `CLAUDE_ALLOWED_USERS=<id1>,<id2>`；空 = fail-closed
   - 计费：subprocess `env.pop("ANTHROPIC_API_KEY")` 强制走订阅模式
+  - prompt 走 stdin（避免 Windows cmd.exe 截断多行 arg）
+  - phase-2 传 `--permission-mode acceptEdits`，让 Claude 真能改文件
+  - 退出/确认是 LLM 三选一分类（CONFIRM / CANCEL / REFINE），"结束吧/别搞了/改成 X" 都能识别
+  - 管理命令（重启/测试推送）优先级最高，不会被陈旧 pending 误抢
   - 无 TTL · 手动"退出"才放弃；refinement（自然语言补充）会启二次 phase-1
   - 子进程读 `CLAUDE.md` + `wechat/task_log.md`，phase-2 后由 Claude 自己追加 task_log
+- **Phase 10 P1.3**：端到端联调通过——微信发任务 → 收到 5 行方案 → 回"执行" → task_log.md 真实被改
 
 待实现 / TODO：
-- P1.3 端到端联调："让 Claude 加 X 功能" → 看方案 → 执行 → 重启 → 用新功能
-- 深度分析速度优化（详见 `~/.claude/plans/readme-progress-squishy-meerkat.md` 番外）
+- **P1.4**（待选）：工作流级 session 共享 —— phase-1 / phase-2 / refinement 用同一个 `--session-id`，Claude 内部推理也接续。约 30 分钟。详见 `~/.claude/plans/readme-progress-squishy-meerkat.md` P1.4
+- **P1.5**（待选）：命名长期工作分支 —— "起名 gmail" 持久化 session，几天后"继续 gmail"接着上次的迭代。约 1-2 小时。详见 plan 文件 P1.5
+- **不做**：永久共享 bot session（token 爆炸 + 任务串扰；task_log.md 已经做了"摘要后的长期记忆"这件事，质量反而更高）
+- 深度分析速度优化（详见 plan 文件番外）
 
 ## 踩过的坑
 
@@ -120,7 +127,7 @@ AI_NEWS/
 
 ## 下一步
 
-- 改完 bat 别忘重启加载新代码：关掉 start_ai_news.bat 黑窗口，重新双击，等待 iLink 自动登录（凭证在 `~/.ai_news_wechat.json`）
-- 配 `.env` 加 `CLAUDE_ALLOWED_USERS=<你的 user_id>`，否则 Claude 入口 fail-closed
-- 微信发 "新增加功能：在 wechat/dispatcher.py 头加一行注释 hello-from-claude" 跑端到端联调（最小可验证任务）
+- **P1.2/P1.3 已闭环**，可以放心用。任何代码改动只要"重启"就生效
+- **P1.4（工作流级 session）**：跑几天 P1.2 看 phase-2 是否经常误解 phase-1。若是，再实现——约 30 分钟、风险低。详细方案在 `~/.claude/plans/readme-progress-squishy-meerkat.md` P1.4
+- **P1.5（命名长期分支）**：等真的发现自己有多个长期工作分支再做（比如同时维护 "gmail 集成"、"股票监控" 两个功能演进）。详细方案在 plan P1.5
 - 视情况切独立 API key（`BOT_ANTHROPIC_API_KEY` + 修改 `_run_claude_subprocess` 注入），如果发现订阅模式跟自己用配额冲突
