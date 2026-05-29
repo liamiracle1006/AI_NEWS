@@ -42,6 +42,7 @@ class AnalyzeRequest(BaseModel):
     auto_synonyms: bool = True
     week_mode: bool = False       # use full 7-day cache for cross-week trend analysis
     analyze_date: str | None = None  # YYYY-MM-DD; if set + not week_mode, filter to that publish date
+    fast_mode: bool = False       # skip full-body fetch (trafilatura); use title+summary only
 
 
 class AnalyzeResponse(BaseModel):
@@ -99,10 +100,12 @@ async def _run_analysis(job_id: str, req: AnalyzeRequest, expanded_keyword: str)
         total = len(hits)
 
         # Fetch full article bodies in parallel (cache stores RSS metadata only)
-        needs_body = [a for a in hits if not a.body]
         scope_label = "本周" if req.week_mode else "当日"
+        needs_body = [] if req.fast_mode else [a for a in hits if not a.body]
+        if req.fast_mode:
+            emit("fetching", f"{scope_label}命中 {total} 篇，快速模式：跳过正文抓取，仅用标题+摘要。")
         if needs_body:
-            emit("fetching", f"{scope_label}命中 {total} 篇，正在并行获取全文（{len(needs_body)} 篇）...")
+            emit("fetching", f"{scope_label}命中 {total} 篇,正在并行获取全文（{len(needs_body)} 篇）...")
             from news.ingest import _extract_body
             import concurrent.futures
 
@@ -139,17 +142,25 @@ async def _run_analysis(job_id: str, req: AnalyzeRequest, expanded_keyword: str)
             job["error"] = "事实提取失败"
             return
 
-        emit("extracting", "正在进行交叉比对分析...")
-        cross = await loop.run_in_executor(
-            None, lambda: cross_reference(provider, expanded_keyword, facts_bundle)
-        )
-
-        entities = None
+        # Run cross_reference + track_entities concurrently — independent LLM calls.
         if req.track_people:
-            emit("extracting", "正在追踪人物...")
-            entities = await loop.run_in_executor(
-                None, lambda: track_entities(provider, expanded_keyword, facts_bundle)
-            )
+            emit("extracting", "并行进行交叉比对 + 人物追踪...")
+        else:
+            emit("extracting", "正在进行交叉比对分析...")
+
+        def _run_cross_and_entities():
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
+                cross_fut = ex.submit(cross_reference, provider, expanded_keyword, facts_bundle)
+                ent_fut = (
+                    ex.submit(track_entities, provider, expanded_keyword, facts_bundle)
+                    if req.track_people else None
+                )
+                cross_r = cross_fut.result()
+                ent_r = ent_fut.result() if ent_fut else None
+                return cross_r, ent_r
+
+        cross, entities = await loop.run_in_executor(None, _run_cross_and_entities)
 
         weekly = None
         if req.week_mode and facts_bundle:

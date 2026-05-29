@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Callable, List, Optional, Tuple
@@ -63,12 +64,23 @@ def _safe_json(raw: str) -> dict | None:
         return None
 
 
-def _extract_one(provider: LLMProvider, art: Article) -> ArticleFacts | None:
+def _extract_one(provider: LLMProvider, art: Article, max_retries: int = 3) -> ArticleFacts | None:
     system, user = build_fact_extraction_prompt(art)
-    try:
-        raw = provider.complete(system, user, json_mode=True, max_tokens=1024)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("provider failed on %s: %s", art.url, exc)
+    raw = None
+    for attempt in range(max_retries):
+        try:
+            raw = provider.complete(system, user, json_mode=True, max_tokens=1024)
+            break
+        except Exception as exc:  # noqa: BLE001
+            if attempt == max_retries - 1:
+                log.warning("provider failed on %s after %d tries: %s", art.url, max_retries, exc)
+                return None
+            # Exponential backoff: 1s → 2s → 4s. Covers rate-limit (429) + transient network.
+            backoff = 2 ** attempt
+            log.info("provider error on %s (attempt %d/%d): %s — retry in %ds",
+                     art.url, attempt + 1, max_retries, exc, backoff)
+            time.sleep(backoff)
+    if raw is None:
         return None
     data = _safe_json(raw)
     if not data:
@@ -92,7 +104,7 @@ def extract_facts_batch(
     provider: LLMProvider,
     articles: List[Article],
     on_progress: Optional[Callable[[int, int], None]] = None,
-    max_workers: int = 5,
+    max_workers: int = 10,
 ) -> List[ArticleFacts]:
     total = len(articles)
     # Preserve input order in output
@@ -384,14 +396,15 @@ def analyze_topic(
     max_articles: int = 10,
     min_hits: int = 3,
     track_people: bool = True,
+    fast_mode: bool = False,
 ) -> Tuple[List[ArticleFacts], CrossReferenceResult | None, EntityTrackingResult | None]:
     articles = fetch_all(
         cfg.sources,
         window_hours=cfg.fetch_window_hours,
         max_per_source=cfg.max_per_source,
-        fetch_body=True,
+        fetch_body=not fast_mode,
     )
-    log.info("fetched %d articles total", len(articles))
+    log.info("fetched %d articles total (fast_mode=%s)", len(articles), fast_mode)
 
     hits = filter_by_keyword(articles, keyword_expr, min_hits=min_hits)
     log.info("keyword %r matched %d articles", keyword_expr, len(hits))
@@ -406,10 +419,11 @@ def analyze_topic(
         log.warning("no usable fact extractions, skipping cross-reference")
         return [], None, None
 
-    cross = cross_reference(provider, keyword_expr, facts_bundle)
-
-    entities = None
-    if track_people:
-        entities = track_entities(provider, keyword_expr, facts_bundle)
+    # Run cross_reference + track_entities in parallel — independent LLM calls, no shared state.
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        cross_fut = pool.submit(cross_reference, provider, keyword_expr, facts_bundle)
+        ent_fut = pool.submit(track_entities, provider, keyword_expr, facts_bundle) if track_people else None
+        cross = cross_fut.result()
+        entities = ent_fut.result() if ent_fut else None
 
     return facts_bundle, cross, entities
