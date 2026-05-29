@@ -1,0 +1,54 @@
+# .claudeignore — Claude Code 不读这些路径
+# 语法跟 .gitignore 一样。被命中的文件 Claude 物理上读不到，
+# 即使你说"读 X"它也会拒绝；这就保证敏感内容不会上传到 Anthropic。
+#
+# 跟 .gitignore 的区别：
+# - .gitignore = 不进 git 仓库
+# - .claudeignore = 不让 Claude 看（即使在仓库里）
+# 两者经常重叠，但作用是分开的。
+
+# ── 必须屏蔽：私密 / 凭证 ──────────────────────────
+.env
+.env.*
+*.env.local
+*.key
+*.pem
+*.p12
+*.credentials
+credentials.json
+*credentials*.json
+secrets/
+private/
+
+# ── 大且无用：构建产物 / 缓存 ────────────────────────
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+node_modules/
+frontend/dist/
+frontend/build/
+frontend/.next/
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# ── Git 内部（Claude 用 git CLI，不需要直接读 .git/）─
+.git/
+
+# ── IDE / OS 元数据 ──────────────────────────────
+.vscode/settings.local.json
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ── 可选屏蔽（默认放开，想更严格自行取消注释）────────
+# logs/         # bot 启动日志，可能含微信 user_id
+# cache/        # RSS 抓取原文（不算敏感但很大）
+# briefs/       # 生成的分析报告
+# wechat/task_log.md   # ⚠️ 不要屏蔽：这是 Claude 跨任务记忆传话本
