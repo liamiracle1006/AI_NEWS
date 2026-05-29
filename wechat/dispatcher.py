@@ -9,6 +9,7 @@ from __future__ import annotations
 import io
 import logging
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -21,6 +22,7 @@ from typing import Optional
 
 import requests
 
+from . import claude_sessions
 from .formatter import (
     format_analysis,
     format_articles,
@@ -67,6 +69,26 @@ CLAUDE_CANCEL_WORDS = {
 CLAUDE_CONFIRM_WORDS = {
     "执行", "好", "好的", "ok", "go", "干", "继续", "yes", "y", "1",
     "确认", "确定", "改吧", "动手", "开干",
+}
+
+# P1.5 · 命名分支管理：触发文本里"起名 X / 命名为 X / 叫 X"
+# 名字只允许 [A-Za-z0-9_-]，最长 32（避免奇怪字符进文件名）
+_BRANCH_NAME_RE = r"([A-Za-z][\w\-]{0,31})"
+NAMING_HINT_RE = re.compile(rf"(?:起名为?|命名为?|叫做|叫)\s*[:：]?\s*{_BRANCH_NAME_RE}")
+
+# 管理命令："继续 X" / "恢复 X" / "resume X"（可带后续内容）
+RESUME_BRANCH_RE = re.compile(
+    rf"^(?:继续|恢复|resume)\s+{_BRANCH_NAME_RE}\s*[:：]?\s*(.*)$",
+    re.IGNORECASE,
+)
+# 管理命令："删除 X 分支" / "删 X 分支" / "删除 X"
+DELETE_BRANCH_RE = re.compile(
+    rf"^(?:删除|删)\s+{_BRANCH_NAME_RE}\s*(?:分支)?\s*$"
+)
+# 管理命令：列分支
+LIST_BRANCHES_TEXTS = {
+    "列出 Claude 分支", "列出claude分支", "Claude 分支", "claude 分支",
+    "claude分支", "bot 分支", "bot分支", "list branches",
 }
 
 PHASE_1_PROMPT = """<user_request>
@@ -289,6 +311,22 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
             self._handle_force_restart(msg, channel)
             return
 
+        # P1.5 · 命名分支管理命令（优先级同 "重启"，避免被 Claude pending 抢走）
+        if text in LIST_BRANCHES_TEXTS:
+            self._handle_list_branches(msg, channel)
+            return
+        m_resume = RESUME_BRANCH_RE.match(text)
+        if m_resume:
+            branch_name = m_resume.group(1)
+            follow_up = m_resume.group(2).strip()
+            self._handle_resume_branch(msg, channel, branch_name, follow_up)
+            return
+        m_delete = DELETE_BRANCH_RE.match(text)
+        if m_delete:
+            branch_name = m_delete.group(1)
+            self._handle_delete_branch(msg, channel, branch_name)
+            return
+
         # P1.2 · 优先处理 Claude 元代理的 pending 状态（无 TTL，必须手动退出）
         if self._check_claude_pending(msg, channel):
             return
@@ -374,6 +412,82 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
             os._exit(0)
 
         threading.Thread(target=_delayed_exit, daemon=True, name="force-exit").start()
+
+    # ── P1.5 · Claude 命名工作分支管理 ────────────────────────────────────────
+
+    def _handle_list_branches(self, msg: IncomingMessage, channel: IlinkChannel):
+        """列出该用户所有命名 Claude 分支。"""
+        branches = claude_sessions.list_for_user(msg.from_user_id)
+        if not branches:
+            channel.send_text(
+                msg.from_user_id,
+                "📂 你还没有命名的 Claude 分支。\n\n"
+                "触发任务时加『起名 X』可创建：\n"
+                "  新增加功能 Gmail 集成，起名 gmail"
+            )
+            return
+        lines = [f"📂 你的 Claude 分支（{len(branches)} 个）："]
+        for i, b in enumerate(branches, 1):
+            when = (time.strftime("%Y-%m-%d", time.localtime(b["last_used"]))
+                    if b["last_used"] else "—")
+            desc = b["description"] or "(无描述)"
+            lines.append(f"\n{i}. {b['name']}")
+            lines.append(f"   最后活动: {when} · 任务数: {b['task_count']}")
+            lines.append(f"   首次描述: {desc[:50]}")
+        lines.append("\n———\n发 '继续 X' 接续 / '删除 X 分支' 删除")
+        channel.send_text(msg.from_user_id, "\n".join(lines))
+
+    def _handle_delete_branch(self, msg: IncomingMessage, channel: IlinkChannel, name: str):
+        """删除一个命名 Claude 分支。"""
+        if claude_sessions.delete_branch(msg.from_user_id, name):
+            channel.send_text(msg.from_user_id, f"✅ 已删除分支 '{name}'。")
+        else:
+            channel.send_text(
+                msg.from_user_id,
+                f"❌ 没找到分支 '{name}'。发『列出 Claude 分支』看看现有的。"
+            )
+
+    def _handle_resume_branch(self, msg: IncomingMessage, channel: IlinkChannel,
+                              name: str, follow_up: str):
+        """从命名 Claude 分支接续。follow_up 是用户在"继续 X"后面跟的话。"""
+        # 白名单（fail-closed）
+        allowed = self.config.claude_allowed_users
+        if not allowed or msg.from_user_id not in allowed:
+            channel.send_text(msg.from_user_id, "🛑 Claude Code 仅授权账号可用。")
+            return
+        branch = claude_sessions.get_branch(msg.from_user_id, name)
+        if not branch:
+            channel.send_text(
+                msg.from_user_id,
+                f"❌ 没找到分支 '{name}'。发『列出 Claude 分支』看看现有的。"
+            )
+            return
+
+        sid = branch["session_id"]
+        # follow_up 为空时，让 Claude 看历史决定下一步
+        request = follow_up or "(用户没说做什么；请你回顾这个 session 之前的进度，简短问下一步)"
+
+        self._claude_pending[msg.from_user_id] = {
+            "request": request,
+            "proposal": None,
+            "created_at": time.time(),
+            "running": "phase1",
+            "cancelled": False,
+            "session_id": sid,
+            "session_name": name,
+            "is_first_call": False,  # resume → 后续都走 --resume
+        }
+        channel.send_text(
+            msg.from_user_id,
+            f"🧠 正在从分支 '{name}' 接续（Claude 会看历史 + 你的补充）...\n"
+            f"（期间可以发『退出』放弃；本次结束后分支仍保留）"
+        )
+        threading.Thread(
+            target=self._run_claude_phase1,
+            args=(msg, False),
+            daemon=True,
+            name=f"claude-resume-{name}",
+        ).start()
 
     # ── P1.2 · Claude Code 元入口（可行性先行的两阶段执行）───────────────────
 
@@ -471,6 +585,26 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
             channel.send_text(msg.from_user_id, "🛑 Claude Code 仅授权账号可用。")
             return True
 
+        # P1.5 · 解析 "起名 X" / "命名为 X" / "叫 X" → 创建命名持久化 session
+        session_name: Optional[str] = None
+        name_match = NAMING_HINT_RE.search(text)
+        if name_match:
+            candidate = name_match.group(1)
+            ok, result = claude_sessions.create_branch(
+                msg.from_user_id, candidate, description=text[:80]
+            )
+            if not ok:
+                channel.send_text(
+                    msg.from_user_id,
+                    f"❌ {result}\n\n"
+                    f"发『列出 Claude 分支』查看现有分支，或先『删除 {candidate} 分支』再重试。"
+                )
+                return True
+            session_name = candidate
+            session_id = result
+        else:
+            session_id = str(uuid.uuid4())
+
         # 立即在 pending 里挂上 running 状态，这样 "退出" 能在 phase-1 跑的过程中起效
         self._claude_pending[msg.from_user_id] = {
             "request": text,
@@ -478,11 +612,16 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
             "created_at": time.time(),
             "running": "phase1",
             "cancelled": False,
+            "session_id": session_id,
+            "session_name": session_name,  # 命名 session → str；匿名 → None
+            "is_first_call": True,  # 决定首次用 --session-id 还是后续用 --resume
         }
+        suffix = (f"（分支已命名为 '{session_name}'，phase-2 后会持久化保留）"
+                  if session_name else "")
         channel.send_text(
             msg.from_user_id,
             "🧠 收到，正在让 Claude 做可行性分析（约 30 秒 – 2 分钟）...\n"
-            "（期间可以发『退出』放弃）"
+            "（期间可以发『退出』放弃）" + ("\n" + suffix if suffix else "")
         )
         threading.Thread(
             target=self._run_claude_phase1,
@@ -555,11 +694,17 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
         return True
 
     def _run_claude_subprocess(self, prompt: str, timeout: int,
-                               allow_edits: bool = False) -> tuple[bool, str]:
+                               allow_edits: bool = False,
+                               session_id: Optional[str] = None,
+                               resume_session_id: Optional[str] = None) -> tuple[bool, str]:
         """订阅模式跑 `claude --print`。返回 (success, output_or_error)。
 
         allow_edits=True 时传 `--permission-mode acceptEdits`，让 Claude 真的能改文件
         （phase-2 必须，否则它只会"想改"不实际写）。phase-1 用 False，更安全。
+
+        session_id：首次创建一个 session 时用 `--session-id <uuid>`。
+        resume_session_id：接续既有 session 用 `--resume <uuid>`（refinement / phase-2 / 命名分支）。
+        两者互斥；都不传则是完全独立的 ad-hoc session。
         """
         claude_path = _find_claude_cli()
         if claude_path is None:
@@ -575,6 +720,11 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
         argv = [claude_path, "--print"]
         if allow_edits:
             argv += ["--permission-mode", "acceptEdits"]
+        # session 控制（P1.5）：resume 优先于 session-id
+        if resume_session_id:
+            argv += ["--resume", resume_session_id]
+        elif session_id:
+            argv += ["--session-id", session_id]
         try:
             t0 = time.time()
             # 关键：prompt 走 stdin 而非命令行 arg。
@@ -645,7 +795,14 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
             current_request=current_block,
         )
 
-        ok, output = self._run_claude_subprocess(prompt, timeout=600)
+        # session 控制（P1.5）：首次用 --session-id 起；refinement 用 --resume 接续
+        cur_before = self._claude_pending.get(user_id, {})
+        sid = cur_before.get("session_id")
+        is_first = cur_before.get("is_first_call", True)
+        if is_first:
+            ok, output = self._run_claude_subprocess(prompt, timeout=600, session_id=sid)
+        else:
+            ok, output = self._run_claude_subprocess(prompt, timeout=600, resume_session_id=sid)
 
         # 跑完后回查 pending，看是否在过程中被取消
         cur = self._claude_pending.get(user_id)
@@ -664,6 +821,7 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
 
         cur["proposal"] = output
         cur["running"] = False
+        cur["is_first_call"] = False  # 后续 refinement / phase-2 都走 --resume
         if not refined:
             cur["request"] = text or cur.get("request", "")
 
@@ -679,6 +837,8 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
         original_request = pending_snapshot.get("request", "")
         proposal = pending_snapshot.get("proposal", "")
         confirmation = msg.text or "执行"
+        sid = pending_snapshot.get("session_id")
+        session_name = pending_snapshot.get("session_name")
 
         prompt = PHASE_2_PROMPT.format(
             user_id=user_id,
@@ -687,7 +847,10 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
             confirmation_text=confirmation,
         )
 
-        ok, output = self._run_claude_subprocess(prompt, timeout=1800, allow_edits=True)
+        # phase-2 一定是 --resume（session 已在 phase-1 起好）
+        ok, output = self._run_claude_subprocess(
+            prompt, timeout=1800, allow_edits=True, resume_session_id=sid,
+        )
 
         cur = self._claude_pending.get(user_id)
         if cur is None or cur.get("cancelled"):
@@ -703,11 +866,16 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
             )
             return
 
-        # 成功 → 清掉 pending，发结果
+        # 成功 → 命名 session 更新 last_used / task_count
+        if session_name:
+            claude_sessions.touch_branch(user_id, session_name)
+
+        # 清掉 pending，发结果
         self._claude_pending.pop(user_id, None)
+        name_suffix = f"\n（分支 '{session_name}' 已更新；下次可用 '继续 {session_name}' 接续）" if session_name else ""
         self._send_chunked(
             user_id,
-            "✅ Claude 改完了\n\n" + output + "\n\n———\n发 '重启' 让新代码生效"
+            "✅ Claude 改完了\n\n" + output + "\n\n———\n发 '重启' 让新代码生效" + name_suffix
         )
 
     def _send_chunked(self, user_id: str, text: str, chunk: int = 1500):

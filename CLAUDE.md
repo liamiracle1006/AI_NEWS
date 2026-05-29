@@ -102,10 +102,15 @@ AI_NEWS/
   - 无 TTL · 手动"退出"才放弃；refinement（自然语言补充）会启二次 phase-1
   - 子进程读 `CLAUDE.md` + `wechat/task_log.md`，phase-2 后由 Claude 自己追加 task_log
 - **Phase 10 P1.3**：端到端联调通过——微信发任务 → 收到 5 行方案 → 回"执行" → task_log.md 真实被改
+- **Phase 10 P1.4 + P1.5**：工作流级 session + 命名长期分支
+  - 新文件 `wechat/claude_sessions.py`：`~/.ai_news_claude_sessions.json` 持久化 `{user_id: {name: {session_id, last_used, ...}}}`，per-user 独立空间、无 TTL、命名冲突拒绝
+  - phase-1 起 session 用 `--session-id <uuid>`；refinement / phase-2 用 `--resume <uuid>`（同一工作流内 Claude 内部推理接续）
+  - 触发文本里含"起名 X / 命名为 X / 叫 X" → 创建命名分支并持久化；匿名 session 完成即弃
+  - 新管理命令（优先级 = "重启"）：「继续 X」 / 「列出 Claude 分支」 / 「删除 X 分支」
+  - phase-2 成功后命名分支 `touch_branch` 更新 last_used + task_count
+  - 持久化文件在 `~/.ai_news_claude_sessions.json`，跨重启保留
 
 待实现 / TODO：
-- **P1.4**（待选）：工作流级 session 共享 —— phase-1 / phase-2 / refinement 用同一个 `--session-id`，Claude 内部推理也接续。约 30 分钟。详见 `~/.claude/plans/readme-progress-squishy-meerkat.md` P1.4
-- **P1.5**（待选）：命名长期工作分支 —— "起名 gmail" 持久化 session，几天后"继续 gmail"接着上次的迭代。约 1-2 小时。详见 plan 文件 P1.5
 - **不做**：永久共享 bot session（token 爆炸 + 任务串扰；task_log.md 已经做了"摘要后的长期记忆"这件事，质量反而更高）
 - 深度分析速度优化（详见 plan 文件番外）
 
