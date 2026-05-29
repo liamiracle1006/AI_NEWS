@@ -22,7 +22,7 @@ from typing import Optional
 
 import requests
 
-from . import claude_sessions, verify_phase2
+from . import claude_sessions, tools as wechat_tools, verify_phase2
 from .formatter import (
     format_analysis,
     format_articles,
@@ -411,7 +411,10 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
 
         intent = parse_intent(text)
         if intent is None:
-            # 没命中任何确定性指令 → LLM 闲聊兜底（在后台线程，避免阻塞 poll 循环）
+            # P2 · 先看 wechat/tools/ 里有没有命令式工具能接住
+            if self._try_tools(msg):
+                return
+            # 工具也没命中 → LLM 闲聊兜底（在后台线程，避免阻塞 poll 循环）
             threading.Thread(
                 target=self._handle_chat_fallback,
                 args=(msg,),
@@ -1243,6 +1246,32 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
         else:
             full = reply
         self.channel.send_text(msg.from_user_id, full)
+
+    # ── P2 · 命令式工具插件路由 ────────────────────────────────────────────
+
+    def _try_tools(self, msg: IncomingMessage) -> bool:
+        """命中 wechat/tools/ 里的工具就调它返回 True；否则 False 让下游兜底。
+
+        异常隔离：工具自己挂掉不影响 bot；回一条 `❌ 工具 X 出错: ...` 给用户。
+        工具返回 falsy（空串 / None）→ 视为"没接住"，让 chat fallback 处理。
+        """
+        tool = wechat_tools.find_tool(msg.text)
+        if tool is None:
+            return False
+        logger.info(f"[wechat-dispatch] tool match: {tool.name} (keywords={tool.keywords})")
+        try:
+            reply = tool.handle(msg.text, self)
+        except Exception as e:
+            logger.exception(f"[wechat-dispatch] tool {tool.name} crashed: {e}")
+            self.channel.send_text(
+                msg.from_user_id,
+                f"❌ 工具 {tool.name} 出错: {type(e).__name__}: {str(e)[:120]}"
+            )
+            return True
+        if not reply:
+            return False
+        self.channel.send_text(msg.from_user_id, str(reply))
+        return True
 
     # ── 分支处理 ───────────────────────────────────────────────────────────
 
