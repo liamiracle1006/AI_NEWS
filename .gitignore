@@ -25,3 +25,6 @@ cache/
 wechat_plugin/config.json
 
 logs/
+
+# MCP local config（路径是机器特定的；.mcp.example.json 才是模板）
+.mcp.json

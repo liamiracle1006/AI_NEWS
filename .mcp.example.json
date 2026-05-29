@@ -1,0 +1,20 @@
+{
+  "_README": "复制此文件为 .mcp.json，把路径改成你机器的实际路径。GitHub PAT 走 .env (GITHUB_PERSONAL_ACCESS_TOKEN)，subprocess 会透传给 MCP 进程；不要写在这里。HTTP 请求用 Claude Code 自带 Bash + curl 即可，没单独配 fetch MCP。",
+
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "<改成你的 AI_NEWS 绝对路径，例：c:/Users/yourname/Desktop/AI_NEWS>",
+        "<可加更多目录到白名单>"
+      ]
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "_note": "包已 deprecated 但仍可用；将来可迁移到 github 官方 Go 实现 (github/github-mcp-server)"
+    }
+  }
+}

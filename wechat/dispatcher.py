@@ -791,8 +791,23 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
         env.pop("CLAUDE_API_KEY", None)
 
         argv = [claude_path, "--print"]
-        if allow_edits:
+
+        # P4 · MCP 启用（项目根有 .mcp.json 才挂；没有就静默跳过）
+        mcp_config = _PROJECT_ROOT / ".mcp.json"
+        mcp_on = mcp_config.exists()
+        if mcp_on:
+            argv += ["--mcp-config", str(mcp_config)]
+
+        # 权限模式：
+        # - MCP 启用 → bypassPermissions（acceptEdits 不足以让 Claude 调 MCP read 工具，
+        #   测试结果：acceptEdits 下 mcp__github__list_commits 仍被拒）
+        # - MCP 未启用 + 需要改文件 → acceptEdits（够用）
+        # - MCP 未启用 + 不需要改文件 → 默认（最安全）
+        if mcp_on:
+            argv += ["--permission-mode", "bypassPermissions"]
+        elif allow_edits:
             argv += ["--permission-mode", "acceptEdits"]
+
         # session 控制（P1.5）：resume 优先于 session-id
         if resume_session_id:
             argv += ["--resume", resume_session_id]
