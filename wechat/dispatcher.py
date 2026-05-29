@@ -85,11 +85,19 @@ RESUME_BRANCH_RE = re.compile(
 DELETE_BRANCH_RE = re.compile(
     rf"^(?:删除|删)\s+{_BRANCH_NAME_RE}\s*(?:分支)?\s*$"
 )
-# 管理命令：列分支
-LIST_BRANCHES_TEXTS = {
-    "列出 Claude 分支", "列出claude分支", "Claude 分支", "claude 分支",
-    "claude分支", "bot 分支", "bot分支", "list branches",
+# 管理命令：列分支（normalize：去空白 + 小写后比对，避免半角/全角空格、大小写差异）
+_LIST_BRANCHES_NORMALIZED = {
+    "列出claude分支", "列出bot分支", "列出分支",
+    "claude分支", "bot分支", "分支列表",
+    "listbranches", "list", "branches",
 }
+
+
+def _is_list_branches_command(text: str) -> bool:
+    if not text:
+        return False
+    normalized = re.sub(r"\s+", "", text.lower())
+    return normalized in _LIST_BRANCHES_NORMALIZED
 
 PHASE_1_PROMPT = """<user_request>
 {current_request}
@@ -312,7 +320,7 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
             return
 
         # P1.5 · 命名分支管理命令（优先级同 "重启"，避免被 Claude pending 抢走）
-        if text in LIST_BRANCHES_TEXTS:
+        if _is_list_branches_command(text):
             self._handle_list_branches(msg, channel)
             return
         m_resume = RESUME_BRANCH_RE.match(text)
