@@ -76,15 +76,55 @@ CLAUDE_CONFIRM_WORDS = {
 _BRANCH_NAME_RE = r"([A-Za-z][\w\-]{0,31})"
 NAMING_HINT_RE = re.compile(rf"(?:起名为?|命名为?|叫做|叫)\s*[:：]?\s*{_BRANCH_NAME_RE}")
 
-# 管理命令："继续 X" / "恢复 X" / "resume X"（可带后续内容）
-RESUME_BRANCH_RE = re.compile(
-    rf"^(?:继续|恢复|resume)\s+{_BRANCH_NAME_RE}\s*[:：]?\s*(.*)$",
+# 管理命令："继续 X" / "恢复 X" / "resume X"（不强制空格；分支名可以含空格——会在用户分支表里 normalize 查找）
+RESUME_VERB_RE = re.compile(
+    r"^(?:继续|恢复|resume)\s*(.*)$",
+    re.IGNORECASE | re.DOTALL,
+)
+# 管理命令："删除 X" / "删 X" / "删除 X 分支"
+DELETE_VERB_RE = re.compile(
+    r"^(?:删除|删)\s*(.+?)\s*(?:分支)?\s*$",
     re.IGNORECASE,
 )
-# 管理命令："删除 X 分支" / "删 X 分支" / "删除 X"
-DELETE_BRANCH_RE = re.compile(
-    rf"^(?:删除|删)\s+{_BRANCH_NAME_RE}\s*(?:分支)?\s*$"
-)
+
+
+def _resolve_branch_by_prefix(user_id: str, rest: str) -> tuple[Optional[str], str]:
+    """从用户的命名分支表里找一个名字能匹配 `rest` 起始部分的（空格 + 大小写不敏感）。
+
+    例：用户分支 'testbranch'；输入 'test branch 再加一行'
+        → 归一化后 'testbranch再加一行' 起始包含 'testbranch'
+        → 返回 ('testbranch', '再加一行')
+
+    没匹配返回 (None, rest)。
+    """
+    if not rest:
+        return None, ""
+    branches = claude_sessions.list_for_user(user_id)
+    if not branches:
+        return None, rest
+    # 长名优先（避免 'stock' 抢走 'stock_monitor' 的匹配）
+    names_by_len = sorted([b["name"] for b in branches], key=len, reverse=True)
+    rest_norm = re.sub(r"\s+", "", rest.lower())
+    for bname in names_by_len:
+        bname_norm = re.sub(r"\s+", "", bname.lower())
+        if not bname_norm or not rest_norm.startswith(bname_norm):
+            continue
+        # 在原始 rest 中走指针定位"分支名末尾"的位置（跳过空白）
+        i = j = 0
+        while i < len(rest) and j < len(bname_norm):
+            c = rest[i]
+            if c.isspace():
+                i += 1
+                continue
+            if c.lower() == bname_norm[j]:
+                i += 1
+                j += 1
+            else:
+                break
+        if j == len(bname_norm):
+            follow_up = rest[i:].lstrip(":：").strip()
+            return bname, follow_up
+    return None, rest
 # 管理命令：列分支（normalize：去空白 + 小写后比对，避免半角/全角空格、大小写差异）
 _LIST_BRANCHES_NORMALIZED = {
     "列出claude分支", "列出bot分支", "列出分支",
@@ -323,16 +363,23 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
         if _is_list_branches_command(text):
             self._handle_list_branches(msg, channel)
             return
-        m_resume = RESUME_BRANCH_RE.match(text)
+        m_resume = RESUME_VERB_RE.match(text)
         if m_resume:
-            branch_name = m_resume.group(1)
-            follow_up = m_resume.group(2).strip()
-            self._handle_resume_branch(msg, channel, branch_name, follow_up)
-            return
-        m_delete = DELETE_BRANCH_RE.match(text)
+            rest = m_resume.group(1).strip()
+            branch_name, follow_up = _resolve_branch_by_prefix(msg.from_user_id, rest)
+            if branch_name:
+                self._handle_resume_branch(msg, channel, branch_name, follow_up)
+                return
+            # rest 没匹配任何已有分支 → 不消耗，落到下游（可能是 "继续分析以色列"）
+        m_delete = DELETE_VERB_RE.match(text)
         if m_delete:
-            branch_name = m_delete.group(1)
-            self._handle_delete_branch(msg, channel, branch_name)
+            rest = m_delete.group(1).strip()
+            branch_name, _ = _resolve_branch_by_prefix(msg.from_user_id, rest)
+            if branch_name:
+                self._handle_delete_branch(msg, channel, branch_name)
+                return
+            # 没匹配到已有分支 → 还是把 rest 当分支名传过去，由 handler 报"没找到"
+            self._handle_delete_branch(msg, channel, rest)
             return
 
         # P1.2 · 优先处理 Claude 元代理的 pending 状态（无 TTL，必须手动退出）
