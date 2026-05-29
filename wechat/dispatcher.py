@@ -22,7 +22,7 @@ from typing import Optional
 
 import requests
 
-from . import claude_sessions
+from . import claude_sessions, verify_phase2
 from .formatter import (
     format_analysis,
     format_articles,
@@ -895,6 +895,13 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
         sid = pending_snapshot.get("session_id")
         session_name = pending_snapshot.get("session_name")
 
+        # P1.6 · 在跑 phase-2 之前 snapshot 一份"dirty 文件 + mtime"基线
+        try:
+            verify_baseline = verify_phase2.snapshot_files_with_mtime()
+        except Exception as e:
+            logger.warning(f"[wechat-dispatch] verify baseline snapshot failed: {e}")
+            verify_baseline = None
+
         prompt = PHASE_2_PROMPT.format(
             user_id=user_id,
             proposal=proposal,
@@ -925,13 +932,30 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
         if session_name:
             claude_sessions.touch_branch(user_id, session_name)
 
+        # P1.6 · 客观自动验证：对比 baseline → 跑 py_compile + import 检查
+        verify_ok = True
+        verify_section = ""
+        if verify_baseline is not None:
+            try:
+                verify_ok, verify_section = verify_phase2.run_verify(verify_baseline)
+            except Exception as e:
+                logger.exception(f"[wechat-dispatch] verify crashed: {e}")
+                verify_section = f"🔍 自动验证未运行（{type(e).__name__}: {str(e)[:60]}）"
+
         # 清掉 pending，发结果
         self._claude_pending.pop(user_id, None)
-        name_suffix = f"\n（分支 '{session_name}' 已更新；下次可用 '继续 {session_name}' 接续）" if session_name else ""
-        self._send_chunked(
-            user_id,
-            "✅ Claude 改完了\n\n" + output + "\n\n———\n发 '重启' 让新代码生效" + name_suffix
-        )
+        header = "✅ Claude 改完了" if verify_ok else "⚠️ Claude 改完但验证有警告"
+        name_suffix = (f"\n（分支 '{session_name}' 已更新；下次可用 '继续 {session_name}' 接续）"
+                       if session_name else "")
+        footer = "发 '重启' 让新代码生效" + (
+            "" if verify_ok else "（建议先按上方提示修复再重启）"
+        ) + name_suffix
+
+        body_parts = [header, "", output]
+        if verify_section:
+            body_parts.extend(["", verify_section])
+        body_parts.extend(["", "———", footer])
+        self._send_chunked(user_id, "\n".join(body_parts))
 
     def _send_chunked(self, user_id: str, text: str, chunk: int = 1500):
         """微信单条消息过长会被截断；按行拆分，每段加 [i/n] 头。"""
