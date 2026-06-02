@@ -41,23 +41,11 @@ AI_NEWS/
 │       ├── prompts.py       所有 prompt 模板（事实提取/交叉比对/实体追踪/周分析×3）
 │       └── *_provider.py    四家 LLM 适配器
 ├── frontend/src/
-│   ├── App.tsx              主页面：地图 + 分析表单 + 结果区
-│   ├── api.ts               fetch 封装 + SSE hook
-│   ├── types.ts             TS 类型镜像 Pydantic 模型
-│   └── components/
-│       ├── WorldMap.tsx          SVG 世界地图 + 热力着色
-│       ├── RegionPanel.tsx       右侧滑入面板（今天/本周文章列表）
-│       ├── AnalyzeForm.tsx       关键词输入表单
-│       ├── ProgressBar.tsx       SSE 进度条
-│       ├── ResultView.tsx        分析结果总容器
-│       ├── ConsensusSection.tsx  共识事实
-│       ├── DivergenceCard.tsx    叙事分歧
-│       ├── GapSection.tsx        可疑缺口
-│       ├── EntityCard.tsx        人物状态卡片
-│       ├── ArticleDigestList.tsx 各方报道摘要（每篇独立卡）
-│       ├── WeeklyView.tsx        周分析五模块（热度/桑基/时间线/弹性/延迟）
-│       ├── SourceList.tsx        来源链接列表
-│       └── HistoryPanel.tsx      历史简报浏览
+│   ├── App.tsx · api.ts · types.ts   主页面 + fetch/SSE + TS 类型
+│   └── components/                   WorldMap / RegionPanel / AnalyzeForm /
+│                                     ProgressBar / ResultView / ConsensusSection /
+│                                     DivergenceCard / GapSection / EntityCard /
+│                                     ArticleDigestList / WeeklyView / SourceList / HistoryPanel
 ├── wechat/                  Phase 9b+10 微信入口
 │   ├── dispatcher.py        消息路由（管理命令 / Claude pending / tools / parse_intent / chat）
 │   ├── ilink_{api,channel}.py iLink 协议层 + 长轮询
