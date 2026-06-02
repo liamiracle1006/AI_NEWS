@@ -58,12 +58,22 @@ AI_NEWS/
 │       ├── WeeklyView.tsx        周分析五模块（热度/桑基/时间线/弹性/延迟）
 │       ├── SourceList.tsx        来源链接列表
 │       └── HistoryPanel.tsx      历史简报浏览
-├── sources.yaml             16 个新闻源配置（含 bias_tag）
+├── wechat/                  Phase 9b+10 微信入口
+│   ├── dispatcher.py        消息路由（管理命令 / Claude pending / tools / parse_intent / chat）
+│   ├── ilink_{api,channel}.py iLink 协议层 + 长轮询
+│   ├── intent_parser.py     关键词意图识别
+│   ├── claude_sessions.py   P1.5 命名长期分支持久化
+│   ├── verify_phase2.py     P1.6 phase-2 后客观验证（py_compile + import）
+│   ├── tools/               P2 命令式工具插件（echo.py 示范 + 未来 weather/stock_a 等）
+│   ├── task_log.md          Claude 任务流水（跨 session 传话本）
+│   └── {formatter,renderer,scheduler}.py  输出 / 渲染 / 定时
+├── .mcp.json                P4 MCP 配置（gitignored；.mcp.example.json 是模板）
+├── .claudeignore            屏蔽 Claude 读敏感路径
+├── sources.yaml             16 个新闻源配置
 ├── requirements.txt         Python 依赖
-├── cache/                   运行时缓存（gitignore）
-├── briefs/                  分析结果归档（gitignore）
+├── cache/  briefs/  logs/   运行时数据（gitignore）
 ├── README.md                用户向说明
-└── PROGRESS.md              历史阶段日志（Phase 0-8 详细记录，不要往里加新内容）
+└── PROGRESS.md              历史阶段日志（Phase 0-8，不要往里加新内容）
 ```
 
 ## 当前进展
@@ -79,60 +89,64 @@ AI_NEWS/
 - 各方报道摘要板块（逐篇展示）
 - 后端启动时自动抓 RSS + 每小时后台自动刷新
 - LICENSE（非商用）
-- **Phase 9（CoW 插件版）**：源码在 `wechat_plugin/`，由 `sync_to_cow.ps1` 同步到 CoW 副本。已实测可用，但需常驻第二个 CoW 进程
-- **Phase 9b（路径 B · 单仓库整合）**：抽出 CoW 的 weixin channel 进 `AI_NEWS/wechat/`，去掉对 CoW 的依赖：
-  - `wechat/ilink_api.py`（协议层，从 CoW 复制后只换 logger）
-  - `wechat/ilink_channel.py`（精简版长轮询 + QR 登录 + 凭证持久化 + 发送）
-  - `wechat/dispatcher.py`（替代旧 plugin 的 ai_news.py，直接基于 IncomingMessage 分发）
-  - `wechat/types.py`（IncomingMessage / OutgoingReply / ReplyType / IlinkConfig，替代 bridge.context）
-  - `wechat/{intent_parser,formatter,renderer,scheduler}.py`（从 wechat_plugin 搬过来，去掉 CoW 引用）
-  - 启用方式：`.env` 设 `WECHAT_ENABLED=true`，**单条 `uvicorn api.main:app` 就启动一切**
-  - CoW 副本仍可作为备选（如需多 channel 时）
+- **Phase 9（CoW 插件版）**：源码在 `wechat_plugin/`，由 `sync_to_cow.ps1` 同步到 CoW 副本。可用但需常驻第二个 CoW 进程
+- **Phase 9b（单仓库整合）**：抽出 CoW weixin channel 进 `wechat/`，去 CoW 依赖。启用方式：`.env` 设 `WECHAT_ENABLED=true`，单条 `uvicorn api.main:app` 启动一切
 - **Phase 10 P0**：语音输入（iLink `type=3` + 腾讯 ASR `voice_item.text`）+ LLM 意图救援
-- **Phase 10 P1.1**：自我重启（`scripts/start_ai_news.bat` 永循环 + dispatcher "重启" 分支 → `os._exit(0)`；`AI_NEWS_BAT_LOOP=1` 安全门）
-- **Phase 10 P1.2**：Claude Code 元入口（可行性先行的两阶段执行）· commit `3489897`
-  - `wechat/dispatcher.py` 加 `_claude_pending` 状态 + `_check_claude_trigger` / `_check_claude_pending` / `_run_claude_subprocess` / `_run_claude_phase1/phase2` / `_send_chunked`
-  - 强词直通（"@claude / 让 claude / 新增加功能 / 给 bot 加" 等 15 个）；弱词（"帮我加/帮我做/实现一下" 等 9 个）先调 DeepSeek 一句 YES/NO
-  - 白名单：`.env` 的 `CLAUDE_ALLOWED_USERS=<id1>,<id2>`；空 = fail-closed
-  - 计费：subprocess `env.pop("ANTHROPIC_API_KEY")` 强制走订阅模式
-  - prompt 走 stdin（避免 Windows cmd.exe 截断多行 arg）
-  - phase-2 传 `--permission-mode acceptEdits`，让 Claude 真能改文件
-  - 退出/确认是 LLM 三选一分类（CONFIRM / CANCEL / REFINE），"结束吧/别搞了/改成 X" 都能识别
-  - 管理命令（重启/测试推送）优先级最高，不会被陈旧 pending 误抢
-  - 无 TTL · 手动"退出"才放弃；refinement（自然语言补充）会启二次 phase-1
-  - 子进程读 `CLAUDE.md` + `wechat/task_log.md`，phase-2 后由 Claude 自己追加 task_log
-- **Phase 10 P1.3**：端到端联调通过——微信发任务 → 收到 5 行方案 → 回"执行" → task_log.md 真实被改
-- **Phase 10 P1.4 + P1.5**：工作流级 session + 命名长期分支
-  - 新文件 `wechat/claude_sessions.py`：`~/.ai_news_claude_sessions.json` 持久化 `{user_id: {name: {session_id, last_used, ...}}}`，per-user 独立空间、无 TTL、命名冲突拒绝
-  - phase-1 起 session 用 `--session-id <uuid>`；refinement / phase-2 用 `--resume <uuid>`（同一工作流内 Claude 内部推理接续）
-  - 触发文本里含"起名 X / 命名为 X / 叫 X" → 创建命名分支并持久化；匿名 session 完成即弃
-  - 新管理命令（优先级 = "重启"）：「继续 X」 / 「列出 Claude 分支」 / 「删除 X 分支」
-  - phase-2 成功后命名分支 `touch_branch` 更新 last_used + task_count
-  - 持久化文件在 `~/.ai_news_claude_sessions.json`，跨重启保留
+- **Phase 10 P1.1**：自我重启（`start_ai_news.bat` 永循环 + dispatcher "重启" 分支 → `os._exit(0)`；`AI_NEWS_BAT_LOOP=1` 安全门）
+- **Phase 10 P1.2 / P1.3**：Claude Code 元入口 · 可行性先行两阶段 · commit `3489897`
+  - `wechat/dispatcher.py`：`_claude_pending` 状态机 + trigger 检测 + subprocess 调用 + 分块输出
+  - 触发分两档：强词（"@claude / 让 claude / 新增加功能" 等 15 个）直通；弱词（"帮我加 / 实现一下" 等 9 个）DeepSeek YES/NO 过滤
+  - 白名单：`.env` 的 `CLAUDE_ALLOWED_USERS` 空 = fail-closed
+  - subprocess: `env.pop("ANTHROPIC_API_KEY")` 强制订阅模式；prompt 走 stdin 避免 Windows argv 截断；phase-2 加 `--permission-mode acceptEdits` 才能写盘
+  - 退出/确认走 LLM 三选一分类（CONFIRM / CANCEL / REFINE），"结束吧 / 别搞了 / 改成 X" 都能识别
+  - 管理命令（重启 / 列分支 / 测试推送）优先级最高，不会被陈旧 pending 抢
+- **Phase 10 P1.4 + P1.5**：工作流级 session + 命名长期分支 · commits `7537e9d` / `80f45d7`
+  - `wechat/claude_sessions.py`：`~/.ai_news_claude_sessions.json` 持久化 `{user_id: {name: {session_id, ...}}}`，per-user 独立、无 TTL、命名冲突拒绝
+  - phase-1 起 session 用 `--session-id`；refinement / phase-2 用 `--resume`（同工作流内推理接续）
+  - 触发含"起名 X" → 持久化命名分支；匿名 session 完成即弃
+  - 新管理命令：「继续 X [follow-up]」 / 「列出 Claude 分支」 / 「删除 X 分支」；支持模糊匹配（含空格 / 大小写归一化）
+- **Phase 10 P1.6**：phase-2 客观验证 · commit `963d2d2`
+  - `wechat/verify_phase2.py`：snapshot 文件 mtime → diff → `py_compile` + `python -c "import X"` 双重检查
+  - 失败时头标题改 "⚠️ Claude 改完但验证有警告" + 给修复指引；try/except 兜底 verify 自己挂掉不影响 phase-2
+- **Phase 10 P1.7-A**：PHASE_2_PROMPT 强制三块结构 · commit `a26d9d1` —— 改动文件 / 测试指南（具体步骤 + 预期 + 边界用例）/ 系统级动作。Claude 不许再写"自行测试"这种空话
+- **Phase 10 番外**：深度分析提速 A+B+C · commit `865c2c2` —— fact-extract 指数退避 + cross-ref/track-entities 并行 + `fast_mode` 跳过正文抓取
+- **`.claudeignore`** · commit `04dfbe2` —— 项目根屏蔽 `.env` / `*.key` / build 产物；home 级 `~/.claudeignore` 屏蔽 `.ssh/` / `.aws/` / `~/.ai_news_*.json` 等
+- **Phase 10 P2 地基**：`wechat/tools/` 插件目录 · commit `da1fe21`
+  - `__init__.py` 自动发现（pkgutil）+ 注册 + 异常隔离
+  - 契约：`TOOL_NAME` / `TRIGGER_KEYWORDS` / `handle(text, ctx) -> str`
+  - 路由位置：dispatcher 在 `parse_intent` 失败、`chat_fallback` 之前调 `_try_tools`
+  - 现有：`echo.py` 示范；weather / stock_a / pc_launcher 留给微信侧 @claude 仿照加
+- **Phase 10 P4**：MCP 侧门 · commit `fd4d415`
+  - `.mcp.json`（gitignored）配 `filesystem`（白名单 AI_NEWS + accounting-project）+ `github`（用 .env 的 PAT）
+  - dispatcher 检测到 `.mcp.json` → 自动加 `--mcp-config` + `--permission-mode bypassPermissions`（acceptEdits 不足以解锁 MCP read 工具，已实测）
+  - 使能跨项目读 + GitHub remote 操作（issue / PR / commit 查询）
 
 待实现 / TODO：
-- **不做**：永久共享 bot session（token 爆炸 + 任务串扰；task_log.md 已经做了"摘要后的长期记忆"这件事，质量反而更高）
-- 深度分析速度优化（详见 plan 文件番外）
+- **P2 工具填充**：让微信 @claude 仿照 `echo.py` 加 weather / stock_a / pc_launcher（每个 ~5 分钟，端到端实战 P1.2）
+- **P3 股票监控**：等 P2 stock_a 做完，加后台轮询 + 阈值告警 → 微信推送
+- **Phase 11 accounting-project 接入**：等用户那边 API 整理好（router 列表 + 触发关键词），建 `wechat/projects/accounting.py`
+- **P6 微信图片输入**：iLink CDN 解密 + DeepSeek-VL，约 3 小时，详见 plan
+- **不做**：永久共享 bot session（task_log.md 已经做了摘要后的长期记忆，质量更高）
 
 ## 踩过的坑
 
-- **关键词命中过宽**：原本标题/摘要/正文同等级匹配，导致台湾分析里混入只在文末提及一句台湾的无关文章。改为三级级联（先标题，不够再摘要，再不够才正文）
-- **地图面板"附带提及"噪声**：`/api/map/articles` 必须只用标题匹配，**不能 fallback 到摘要**，否则 SCMP 等大站随便一篇都会因摘要含国名被吞进来
-- **`ROC` 子串匹配 Morocco**：地理关键词不能用三字母缩写，已从 Taiwan 关键词中移除
-- **trafilatura 默认无超时**：抓正文会卡死，必须用 `use_config()` 设 `DOWNLOAD_TIMEOUT=15`，外层再加 `concurrent.futures.wait(timeout=30)` 兜底
-- **LLM 偶尔输出英文**：`FACT_EXTRACTION_SYSTEM` 即便有 Rule 6 要求中文，DeepSeek 处理英文文章时仍会偶发英文输出。已在 user 模板尾部加强提醒
+- **关键词命中过宽**：标题/摘要/正文同等级匹配会混入无关文章。改为三级级联（先标题不够再摘要再正文）；`/api/map/articles` 只用标题匹配
+- **`ROC` 子串匹配 Morocco**：地理关键词不能用三字母缩写
+- **trafilatura 默认无超时**：必须用 `use_config()` 设 `DOWNLOAD_TIMEOUT=15` + 外层 `concurrent.futures.wait(timeout=30)` 兜底
+- **LLM 偶尔输出英文**：DeepSeek 处理英文文章时偶发；已在 user 模板尾部加强中文提醒
 - **PowerShell 的 `curl` 是 `Invoke-WebRequest` 别名**：调试 API 必须用 `curl.exe`
 - **`@nivo/sankey` 与 `react-simple-maps` peer dep 冲突**：安装必须加 `--legacy-peer-deps`
-- **`.env` 必须在 `.gitignore` 里**：当前已正确忽略，未泄露过 API key
 - **P1.1 重启 silent failure**：dispatcher.py 漏 `import os` → `_handle_restart` 异常被 try/except 吃掉，ack/重启都不发。教训：每次新加分支记得带上对应 import；终端日志一定要确保 `PYTHONUNBUFFERED=1` + `logging.basicConfig(force=True)` 才能看见 traceback
 - **Python 字符串里"双引号"嵌"双引号"**：用 `『』` 或单引号包，否则 `"...说"退出"放弃..."` 直接把字符串截断成两段，整个文件 SyntaxError
 - **iLink 服务器对短时间相同内容自动去重**：连续两次发 "今日热点" 收到的 heat 列表完全一样 → 第二条被服务器返回"请稍后再试。"。不是 bot bug，发别的内容（"你好" / 不同话题分析）正常。如果将来非要让重复内容也能发出去，可以在 send_text 尾部加个隐形时间戳（不推荐——污染输出）
 - **claude CLI 在 elevated bat 里找不到**：Admin 启动的 cmd 进程 PATH 可能丢失 npm 全局路径；用 `shutil.which("claude")` 会返回 None。`wechat/dispatcher.py:_find_claude_cli` 加了 `%APPDATA%\npm\claude.cmd` 等几个 fallback 路径兜底
 - **Windows 下 claude.cmd 多行 prompt 走 argv 会被截断**：`subprocess.run([claude.cmd, "--print", long_multiline_prompt])` 在 Windows 上会被 cmd.exe 截成首行；Claude 实际只看到第一行，回复 "你的消息空了" / "Your message came through empty"。**修法**：prompt 走 stdin（`subprocess.run(..., input=prompt)`，argv 不带 prompt arg）
+- **`--permission-mode acceptEdits` 不足以让 Claude 调 MCP read 工具**：实测在 acceptEdits 下 `mcp__github__list_commits` 仍被权限拒绝。原因：`acceptEdits` 只覆盖文件 Edit 工具，MCP 工具走另一条权限链。**修法**：检测到 `.mcp.json` 时换 `bypassPermissions`（更宽松）。安全边界靠 CLAUDE_ALLOWED_USERS 白名单 + MCP 自己的 scope（filesystem 白名单、github PAT scope）
+- **`@modelcontextprotocol/server-fetch` npm 仓 404**：原以为存在的官方 fetch MCP 已经被废弃；Python 版 `mcp-server-fetch` 还在但需 `uvx`。当前方案：不装 fetch MCP，Claude 用 Bash + `curl` 干 HTTP 完全够
 
 ## 下一步
 
-- **P1.2/P1.3 已闭环**，可以放心用。任何代码改动只要"重启"就生效
-- **P1.4（工作流级 session）**：跑几天 P1.2 看 phase-2 是否经常误解 phase-1。若是，再实现——约 30 分钟、风险低。详细方案在 `~/.claude/plans/readme-progress-squishy-meerkat.md` P1.4
-- **P1.5（命名长期分支）**：等真的发现自己有多个长期工作分支再做（比如同时维护 "gmail 集成"、"股票监控" 两个功能演进）。详细方案在 plan P1.5
-- 视情况切独立 API key（`BOT_ANTHROPIC_API_KEY` + 修改 `_run_claude_subprocess` 注入），如果发现订阅模式跟自己用配额冲突
+- **微信侧实战测 P2 + P4**：发"echo 你好"验工具地基；发"@claude 看下 AI_NEWS 最近 5 条 commit" 验 github MCP；发"@claude 看下 accounting-project 的 main.py 用了哪些 router" 验跨项目读
+- **让 @claude 加 weather 工具**：发触发词 + "在 wechat/tools/ 仿照 echo.py 加 weather，open-meteo 免 key，起名 weather"——同时验证 P2 契约 + P1.5 命名分支
+- **等 accounting-project API 整理完**：用户更新好后开 `wechat/projects/accounting.py`（Phase 11 起点）
+- 视情况切独立 API key（`BOT_ANTHROPIC_API_KEY`），如果订阅模式跟自己用配额冲突
