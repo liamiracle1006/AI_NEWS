@@ -22,7 +22,7 @@ from typing import Optional
 
 import requests
 
-from . import claude_sessions, routing_log, tools as wechat_tools, verify_phase2
+from . import audit, claude_sessions, config_loader, events, routing_log, tools as wechat_tools, verify_phase2
 from .voice import voice_ack
 from .formatter import (
     format_analysis,
@@ -44,33 +44,25 @@ logger = logging.getLogger(__name__)
 # 项目根（dispatcher.py 在 wechat/，所以 parent.parent 是 AI_NEWS/）
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-# 强词：substring 命中即进 phase-1，不再过 LLM
-STRONG_CLAUDE_TRIGGERS = (
-    "@claude", "@Claude",
-    "让 claude", "让claude", "让 Claude", "让Claude",
-    "新增加功能", "新增功能", "加个功能", "添加功能", "添加新功能",
-    "给 bot 加", "给bot加", "帮 bot 加", "帮bot加",
-)
+# 13.1 · 触发词列表统一走 config_loader，启动时加载，发『重载配置』可热换。
+# 这些模块级名字保留作为"启动时默认值"——dispatcher 实例会同步 self._triggers
+# 字典，所有路由都走 self._triggers 拿，热重载才能生效。
 
-# 弱词：substring 命中后调 DeepSeek 一句 YES/NO 才进 phase-1
-WEAK_CLAUDE_TRIGGERS = (
-    "帮我加", "帮我做", "帮我写", "帮我修", "帮我看",
-    "实现一下", "实现这个", "做个", "做一个",
-)
+def _load_trigger_constants():
+    """从配置层加载触发词集合。重新调即热重载。"""
+    return {
+        "STRONG_CLAUDE_TRIGGERS": tuple(config_loader.get_path("claude.strong_triggers", [])),
+        "WEAK_CLAUDE_TRIGGERS": tuple(config_loader.get_path("claude.weak_triggers", [])),
+        "CLAUDE_CANCEL_WORDS": set(config_loader.get_path("claude.cancel_words", [])),
+        "CLAUDE_CONFIRM_WORDS": set(config_loader.get_path("claude.confirm_words", [])),
+    }
 
-# pending 状态下用户回这些 = 退出 Claude 模式
-CLAUDE_CANCEL_WORDS = {
-    "退出", "取消", "不要了", "算了", "停",
-    "exit", "cancel", "quit",
-    "/exit", "/quit", "/cancel",
-    "退出claude", "退出 claude", "取消claude", "取消 claude",
-}
 
-# pending 状态下用户回这些 = 确认执行（进 phase-2）
-CLAUDE_CONFIRM_WORDS = {
-    "执行", "好", "好的", "ok", "go", "干", "继续", "yes", "y", "1",
-    "确认", "确定", "改吧", "动手", "开干",
-}
+_initial = _load_trigger_constants()
+STRONG_CLAUDE_TRIGGERS = _initial["STRONG_CLAUDE_TRIGGERS"]
+WEAK_CLAUDE_TRIGGERS = _initial["WEAK_CLAUDE_TRIGGERS"]
+CLAUDE_CANCEL_WORDS = _initial["CLAUDE_CANCEL_WORDS"]
+CLAUDE_CONFIRM_WORDS = _initial["CLAUDE_CONFIRM_WORDS"]
 
 # P1.5 · 命名分支管理：触发文本里"起名 X / 命名为 X / 叫 X"
 # 名字只允许 [A-Za-z0-9_-]，最长 32（避免奇怪字符进文件名）
@@ -370,7 +362,33 @@ chat 的 reply **必须**：
         # 12.3 · 加载三件套契约（SOUL.md + AGENTS.md）
         self._persona = {"soul": "", "agents": ""}
         self._load_persona_files()
+        # 13.4 · 注册默认审计订阅者（统计运行时活动）
+        audit.register_default_audit_subscribers()
+        # 13.1 · 触发词实例字典（不重启可热换）；默认从模块级常量初始化
+        self._triggers = {
+            "strong": STRONG_CLAUDE_TRIGGERS,
+            "weak": WEAK_CLAUDE_TRIGGERS,
+            "cancel": CLAUDE_CANCEL_WORDS,
+            "confirm": CLAUDE_CONFIRM_WORDS,
+        }
         channel.set_dispatcher(self._dispatch)
+
+    def _reload_config(self):
+        """热重载 wechat/config.json + 触发词字典。发『重载配置』调。"""
+        cfg = config_loader.reload()
+        new_constants = _load_trigger_constants()
+        self._triggers = {
+            "strong": new_constants["STRONG_CLAUDE_TRIGGERS"],
+            "weak": new_constants["WEAK_CLAUDE_TRIGGERS"],
+            "cancel": new_constants["CLAUDE_CANCEL_WORDS"],
+            "confirm": new_constants["CLAUDE_CONFIRM_WORDS"],
+        }
+        return {
+            "strong": len(self._triggers["strong"]),
+            "weak": len(self._triggers["weak"]),
+            "cancel": len(self._triggers["cancel"]),
+            "confirm": len(self._triggers["confirm"]),
+        }
 
     def _load_persona_files(self):
         """启动 / 重载人设时调。读 wechat/SOUL.md + wechat/AGENTS.md 缓存到 self._persona。"""
@@ -441,6 +459,8 @@ chat 的 reply **必须**：
         # P1.2 · 记录最近消息（为 Claude phase-1 prompt 提供短期上下文）
         if text:
             self._recent_msgs[msg.from_user_id].append(text)
+        # 13.4 · 事件总线：通知所有订阅者（默认 audit 订阅者会做统计）
+        events.emit("message_received", msg=msg, text=text, is_voice=msg.is_voice)
 
         # 12.2 · routing_log 入口短手——每个 return 之前调一次记录决策
         def _log(path: str, **kw):
@@ -449,6 +469,22 @@ chat 的 reply **必须**：
         # 12.2 · 管理命令命中也算"路由日志"管理（log 在 _handle_routing_log 内部做了）
         if text in ("路由日志", "routing log", "routing_log", "看路由"):
             self._handle_routing_log(msg, channel)
+            return
+
+        # 13.4 · 事件审计报告（运行时统计）
+        if text in ("审计", "audit", "看审计", "活动报告"):
+            channel.send_text(msg.from_user_id, audit.format_audit_report())
+            return
+
+        # 13.1 · 重载 config.json + 热换触发词字典
+        if text in ("重载配置", "reload config", "reload_config", "热重载"):
+            sizes = self._reload_config()
+            channel.send_text(
+                msg.from_user_id,
+                f"配置重载了。触发词：strong={sizes['strong']} "
+                f"weak={sizes['weak']} cancel={sizes['cancel']} "
+                f"confirm={sizes['confirm']}"
+            )
             return
 
         # 12.3 · 重载人设（不重启加载新 SOUL/AGENTS）
@@ -642,6 +678,7 @@ chat 的 reply **必须**：
                 target = m_approve.group(1)
                 if routing_log.approve_pairing(target):
                     channel.send_text(uid, f"已批准 {target}。")
+                    events.emit("pairing_approved", user_id=target, by_admin=uid)
                     try:
                         channel.send_text(target,
                             voice_ack("管理员批准你了，可以聊了", "done",
@@ -672,6 +709,7 @@ chat 的 reply **必须**：
             if existing and existing["pair_code"] == code and existing["status"] == "awaiting_code":
                 routing_log.upsert_pairing(uid, code, "awaiting_admin")
                 channel.send_text(uid, "码对了，等管理员批准。")
+                events.emit("pairing_requested", user_id=uid, code=code)
                 # 通知管理员
                 admin = self.config.admin_user_id or (
                     self.config.claude_allowed_users[0] if self.config.claude_allowed_users else None
@@ -810,14 +848,14 @@ chat 的 reply **必须**：
     # ── P1.2 · Claude Code 元入口（可行性先行的两阶段执行）───────────────────
 
     def _detect_claude_trigger(self, text: str) -> Optional[str]:
-        """返回 'strong' / 'weak' / None。"""
+        """返回 'strong' / 'weak' / None。13.1 走 self._triggers 支持热重载。"""
         if not text:
             return None
         s = text.lower()
-        for kw in STRONG_CLAUDE_TRIGGERS:
+        for kw in self._triggers["strong"]:
             if kw.lower() in s:
                 return "strong"
-        for kw in WEAK_CLAUDE_TRIGGERS:
+        for kw in self._triggers["weak"]:
             if kw.lower() in s:
                 return "weak"
         return None
@@ -875,9 +913,10 @@ chat 的 reply **必须**：
         """
         t = (text or "").strip()
         tl = t.lower()
-        if t in CLAUDE_CONFIRM_WORDS or tl in CLAUDE_CONFIRM_WORDS:
+        # 13.1 走 self._triggers 支持热重载
+        if t in self._triggers["confirm"] or tl in self._triggers["confirm"]:
             return "confirm"
-        if t in CLAUDE_CANCEL_WORDS or tl in CLAUDE_CANCEL_WORDS:
+        if t in self._triggers["cancel"] or tl in self._triggers["cancel"]:
             return "cancel"
 
         provider = self._get_llm()
@@ -993,6 +1032,10 @@ chat 的 reply **必须**：
             confidence=100 if kind == "strong" else None,
             model_used=None if kind == "strong" else "deepseek",
         )
+        # 13.4 · 事件
+        events.emit("intent_classified", intent="claude_trigger",
+                    user_id=msg.from_user_id, kind=kind, branch=session_name)
+        events.emit("claude_phase1_started", user_id=msg.from_user_id, text=text)
         threading.Thread(
             target=self._run_claude_phase1,
             args=(msg, False),
@@ -1247,6 +1290,10 @@ chat 的 reply **必须**：
         if not refined:
             cur["request"] = text or cur.get("request", "")
 
+        # 13.4 · phase-1 完成事件
+        events.emit("claude_phase1_completed", phase="phase1",
+                    user_id=user_id, output_len=len(output), refined=refined)
+
         # 12.1 · 不加 emoji 头、不加分隔线、不加"回复 '执行' / '退出'" 提示
         # PHASE_1_PROMPT 已经要求 Claude 用口语自然语言；用户回什么由 LLM 三选一分类自动处理
         self._send_chunked(user_id, output)
@@ -1311,6 +1358,10 @@ chat 的 reply **必须**：
 
         # 清掉 pending，发结果
         self._claude_pending.pop(user_id, None)
+        # 13.4 · phase-2 完成事件
+        events.emit("claude_phase2_completed", phase="phase2",
+                    user_id=user_id, output_len=len(output), verify_ok=verify_ok,
+                    branch=session_name)
         # 12.1 · 成功路径**不**加 emoji 头、**不**广播分支元数据、verify 通过时**沉默**
         # PHASE_2_PROMPT 已经要求 Claude 用口语 1-2 句话告知用户改了啥 + 下一步
         # 只有 verify 失败时才主动展示报告（保证用户能看到问题）
@@ -1641,6 +1692,8 @@ chat 的 reply **必须**：
         logger.info(f"[wechat-dispatch] tool match: {tool.name} (keywords={tool.keywords})")
         # 12.4 · 让 handler 能拿到 user_id（reminders 工具需要）
         self._current_user_id = msg.from_user_id
+        # 13.4 · 事件
+        events.emit("tool_called", tool=tool.name, user_id=msg.from_user_id, text=msg.text)
         try:
             reply = tool.handle(msg.text, self)
         except Exception as e:

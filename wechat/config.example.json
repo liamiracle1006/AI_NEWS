@@ -1,0 +1,41 @@
+{
+  "_README": "复制此文件为 wechat/config.json（gitignored）做本地覆盖。所有字段都是可选——不写就用 wechat/config_loader.py 的 _BUILTIN_DEFAULTS。.env 里的环境变量优先级仍然最高（API key / 路径等敏感配置永远走 env）。",
+  "_layering": "BUILTIN_DEFAULTS → config.example.json → config.json → .env env vars",
+
+  "claude": {
+    "_doc": "Claude Code 元代理触发与超时配置。改完不需要重启，发『重载配置』即可。",
+    "strong_triggers": [
+      "@claude", "@Claude",
+      "让 claude", "让claude", "让 Claude", "让Claude",
+      "新增加功能", "新增功能", "加个功能", "添加功能", "添加新功能",
+      "给 bot 加", "给bot加", "帮 bot 加", "帮bot加"
+    ],
+    "weak_triggers": [
+      "帮我加", "帮我做", "帮我写", "帮我修", "帮我看",
+      "实现一下", "实现这个", "做个", "做一个"
+    ],
+    "cancel_words": [
+      "退出", "取消", "不要了", "算了", "停",
+      "exit", "cancel", "quit",
+      "/exit", "/quit", "/cancel",
+      "退出claude", "退出 claude", "取消claude", "取消 claude"
+    ],
+    "confirm_words": [
+      "执行", "好", "好的", "ok", "go", "干", "继续", "yes", "y", "1",
+      "确认", "确定", "改吧", "动手", "开干"
+    ],
+    "phase1_timeout_seconds": 600,
+    "phase2_timeout_seconds": 1800,
+    "weak_confidence_threshold": 60
+  },
+
+  "voice_ack": {
+    "_doc": "voice_ack 的口语化兜底限制",
+    "max_chars": 35
+  },
+
+  "audit": {
+    "_doc": "13.4 审计统计的行为参数",
+    "max_durations_retained": 100
+  }
+}

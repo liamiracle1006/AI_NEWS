@@ -28,3 +28,6 @@ logs/
 
 # MCP local config（路径是机器特定的；.mcp.example.json 才是模板）
 .mcp.json
+
+# wechat 本地配置覆盖（13.1；config.example.json 才是模板）
+wechat/config.json

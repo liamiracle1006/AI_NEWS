@@ -83,7 +83,7 @@ def start_scheduler(plugin):
 
 def _start_remind_loop(plugin):
     """后台线程每 30 秒扫 routing_log.due_reminders → 推送 → 标 fired。"""
-    from . import routing_log
+    from . import events, routing_log
 
     def loop():
         while True:
@@ -95,6 +95,9 @@ def _start_remind_loop(plugin):
                     if ok:
                         routing_log.mark_reminder_fired(r["id"])
                         logger.info(f"[reminders] fired #{r['id']} to {r['user_id']}: {r['message']}")
+                        # 13.4 · 事件
+                        events.emit("reminder_fired", user_id=r["user_id"],
+                                    reminder_id=r["id"], message=r["message"])
                     else:
                         logger.warning(f"[reminders] send failed for #{r['id']}; will retry")
             except Exception as e:
