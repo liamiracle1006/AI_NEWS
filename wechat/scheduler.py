@@ -77,6 +77,34 @@ def start_scheduler(plugin):
         logger.info("[AINews] hot alert enabled, interval=%dm",
                     cfg.get("hot_alert_interval_minutes", 60))
 
+    # 12.4 · 单次定时提醒循环（每 30s 扫一次到期提醒）
+    _start_remind_loop(plugin)
+
+
+def _start_remind_loop(plugin):
+    """后台线程每 30 秒扫 routing_log.due_reminders → 推送 → 标 fired。"""
+    from . import routing_log
+
+    def loop():
+        while True:
+            try:
+                due = routing_log.due_reminders()
+                for r in due:
+                    text = f"⏰ 提醒你：{r['message']}"
+                    ok = plugin.send_to_user(r["user_id"], text)
+                    if ok:
+                        routing_log.mark_reminder_fired(r["id"])
+                        logger.info(f"[reminders] fired #{r['id']} to {r['user_id']}: {r['message']}")
+                    else:
+                        logger.warning(f"[reminders] send failed for #{r['id']}; will retry")
+            except Exception as e:
+                logger.exception(f"[reminders] loop error: {e}")
+            time.sleep(30)
+
+    t = threading.Thread(target=loop, daemon=True, name="reminders-loop")
+    t.start()
+    logger.info("[reminders] loop started (30s tick)")
+
 
 def _do_daily_push(plugin):
     """拉热度榜 → 取 top N → 对每个跑一次分析 → 拼摘要 → 发送。"""

@@ -22,7 +22,7 @@ from typing import Optional
 
 import requests
 
-from . import claude_sessions, tools as wechat_tools, verify_phase2
+from . import claude_sessions, routing_log, tools as wechat_tools, verify_phase2
 from .voice import voice_ack
 from .formatter import (
     format_analysis,
@@ -299,34 +299,51 @@ class Dispatcher:
     原因：复用现有的 job 队列 / SSE / brief 持久化逻辑，避免重写。
     """
 
-    # 闲聊兜底用的 LLM system prompt
+    # 闲聊兜底用的 LLM system prompt（12.2：口语化，不要客服腔）
     CHAT_FALLBACK_SYSTEM = (
-        "你是一个微信聊天助手，回答简洁、口语化、用中文。"
-        "如果用户问的话题涉及国际新闻 / 国家局势 / 时事分析，"
-        "提醒他可以发 '今日热点' 看热度榜，或发 '分析<国家>' 做深度分析。"
-        "不要回答涉及金融投资具体买卖的建议。"
-        "回复长度建议 100-300 字。"
+        "你是用户的朋友，在微信上聊天。"
+        "**口语化**，像朋友说话，不要客服腔（『请问』『为您』『建议您』这种统统**不要**）。"
+        "回复**短**，30 字以内。一两句话就够。\n\n"
+        "如果用户问国际新闻/国家局势/时事 → 自然提一句『发 今日热点 看热度榜，或 分析<国家> 做深度分析』\n"
+        "不要回答金融投资买卖建议（拒绝时也用口语：『这个我不能给具体建议』）\n"
+        "不要 emoji，不要分隔线，不要长篇大论。"
     )
 
     # LLM 意图救援：关键词匹配漏掉时让 DeepSeek 看一眼，返回结构化结果或闲聊
+    # 12.2：加 few-shot 示例 + 历史感知 + chat reply 口语化（≤30字）
     INTENT_RESCUE_SYSTEM = """\
-你是 AI_NEWS 微信助手的意图分类器。判断用户消息属于哪类，按 JSON 返回。
-AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文章、看历史简报。
+你是 AI_NEWS 微信助手的意图分类器。判断用户消息属于哪类，按 JSON 一行返回。
+AI_NEWS 支持：深度分析国家/话题、看全球热度榜、看单国文章列表、看历史简报。
 
-返回格式（只返回 JSON 一行，禁止其他文字）：
-- 想深度分析某话题（国家或事件）：{"action":"analyze","topic":"<话题>","week":false}
-- 想看全球新闻热度榜：{"action":"heat"}
-- 想看某国相关文章列表：{"action":"articles","country_zh":"<中文国名>"}
-- 想看历史已生成的分析简报：{"action":"brief_list"}
-- 想看本周综合分析：在 analyze 上加 "week":true
-- 普通聊天 / 无关问题：{"action":"chat","reply":"<你的中文回答，100-200字>"}
+返回格式（**只**返回 JSON 一行）：
+- 深度分析话题：{"action":"analyze","topic":"<话题>","week":false}
+- 全球热度榜：{"action":"heat"}
+- 某国文章列表：{"action":"articles","country_zh":"<中文国名>"}
+- 历史简报：{"action":"brief_list"}
+- 本周综合：在 analyze 上加 "week":true
+- 闲聊/无关：{"action":"chat","reply":"<口语化回复，≤30字>"}
 
-规则：
-1. 用户问「X 怎么样 / X 局势 / X 最近的事」→ analyze topic=X
-2. 用户问「今天 / 现在 / 最近 全球热点 / 大事」→ heat
-3. 用户问「X 的新闻 / X 的报道」→ articles X
-4. 闲聊 / 问候 / 知识问答 / 跟新闻无关 → chat（自己作答）
-5. 涉及股票买卖 / 投资具体建议 → chat 但拒绝给建议
+few-shot 示例：
+"以色列最近怎么样" → {"action":"analyze","topic":"以色列","week":false}
+"分析下加沙" → {"action":"analyze","topic":"加沙","week":false}
+"伊朗本周综合" → {"action":"analyze","topic":"伊朗","week":true}
+"今日热点" → {"action":"heat"}
+"全球大事" → {"action":"heat"}
+"中国新闻" → {"action":"articles","country_zh":"中国"}
+"看下俄罗斯报道" → {"action":"articles","country_zh":"俄罗斯"}
+"历史简报" → {"action":"brief_list"}
+"之前那些分析在哪" → {"action":"brief_list"}
+"你好" → {"action":"chat","reply":"嗨，找我啥事？"}
+"今天天气怎么样" → {"action":"chat","reply":"我没法查天气哎。要不发『今日热点』看下新闻？"}
+"我要买茅台" → {"action":"chat","reply":"这个我不能给具体买卖建议。"}
+"在干啥" → {"action":"chat","reply":"等你召唤。要分析啥？"}
+
+chat 的 reply **必须**：
+- ≤ 30 字
+- 口语化，像朋友说话
+- 不要客服腔（"请问您""为您服务""建议您"全删）
+- 不要 emoji
+- 涉及新闻/国家话题时自然提一句『发"今日热点"或"分析X"』
 """
 
     # 确认类回复（"是"/"对"/...）映射成布尔
@@ -348,7 +365,44 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
         self._claude_pending: dict[str, dict] = {}
         # 每个 user 最近 10 条文本消息，注入 Claude phase-1 prompt 做短期上下文
         self._recent_msgs: dict[str, deque] = defaultdict(lambda: deque(maxlen=10))
+        # 12.2 · 启动时初始化 SQLite 路由日志 + reminders 表
+        routing_log.init()
+        # 12.3 · 加载三件套契约（SOUL.md + AGENTS.md）
+        self._persona = {"soul": "", "agents": ""}
+        self._load_persona_files()
         channel.set_dispatcher(self._dispatch)
+
+    def _load_persona_files(self):
+        """启动 / 重载人设时调。读 wechat/SOUL.md + wechat/AGENTS.md 缓存到 self._persona。"""
+        wechat_dir = Path(__file__).resolve().parent
+        for key, filename in [("soul", "SOUL.md"), ("agents", "AGENTS.md")]:
+            path = wechat_dir / filename
+            try:
+                if path.exists():
+                    self._persona[key] = path.read_text(encoding="utf-8")
+                    logger.info(f"[wechat-dispatch] loaded {filename} ({len(self._persona[key])}B)")
+                else:
+                    logger.warning(f"[wechat-dispatch] {filename} not found at {path}")
+                    self._persona[key] = ""
+            except Exception as e:
+                logger.warning(f"[wechat-dispatch] load {filename} failed: {e}")
+                self._persona[key] = ""
+
+    def _persona_prefix(self, include_skills: bool = False) -> str:
+        """生成注入 LLM prompt 开头的人设 + 行为规范 + 可选 skills 列表。"""
+        parts = []
+        if self._persona.get("soul"):
+            parts.append("<persona>\n" + self._persona["soul"] + "\n</persona>")
+        if self._persona.get("agents"):
+            parts.append("<behavior>\n" + self._persona["agents"] + "\n</behavior>")
+        if include_skills:
+            try:
+                summary = wechat_tools.all_skills_summary()
+                if summary:
+                    parts.append("<available_tools>\n" + summary + "\n</available_tools>")
+            except Exception as e:
+                logger.warning(f"[wechat-dispatch] skills summary failed: {e}")
+        return ("\n\n".join(parts) + "\n\n") if parts else ""
 
     def _get_llm(self):
         """懒加载 LLM provider（用 AI_NEWS 的 DeepSeek 配置）。"""
@@ -382,29 +436,54 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
         if text:
             self._recent_msgs[msg.from_user_id].append(text)
 
+        # 12.2 · routing_log 入口短手——每个 return 之前调一次记录决策
+        def _log(path: str, **kw):
+            routing_log.log_route(msg.from_user_id, text, path, **kw)
+
+        # 12.2 · 管理命令命中也算"路由日志"管理
+        if text in ("路由日志", "routing log", "routing_log", "看路由"):
+            self._handle_routing_log(msg, channel)
+            _log("admin -> routing_log")
+            return
+
+        # 12.3 · 重载人设（不重启加载新 SOUL/AGENTS）
+        if text in ("重载人设", "reload persona", "reload_persona"):
+            self._load_persona_files()
+            channel.send_text(
+                msg.from_user_id,
+                f"重载了 SOUL ({len(self._persona['soul'])}B) + "
+                f"AGENTS ({len(self._persona['agents'])}B)。"
+            )
+            _log("admin -> reload_persona")
+            return
+
         # 管理类指令是全局逃生口：最高优先级，即使有 Claude pending 也立刻执行
-        # （否则"重启"会被 LLM pending 分类器误判为 CONFIRM 而启动 phase-2）
         if text in ("测试推送", "test_push", "测试每日推送"):
             channel.send_text(msg.from_user_id, "✅ 已在后台触发每日推送，请等待…")
             from .scheduler import _do_daily_push
             threading.Thread(target=_do_daily_push, args=(self,), daemon=True).start()
+            _log("admin -> daily_push", intent="daily_push")
             return
         if text in ("测试告警", "test_alert"):
             channel.send_text(msg.from_user_id, "✅ 已在后台触发热点告警检查…")
             from .scheduler import _do_hot_alert
             threading.Thread(target=_do_hot_alert, args=(self,),
                              kwargs={"verbose": True}, daemon=True).start()
+            _log("admin -> hot_alert", intent="hot_alert")
             return
         if text in ("重启", "重启 bot", "重启 uvicorn", "restart", "reboot"):
+            _log("admin -> restart", intent="restart")
             self._handle_restart(msg, channel)
             return
         if text in ("强制重启", "force restart", "force-restart", "强退"):
+            _log("admin -> force_restart", intent="force_restart")
             self._handle_force_restart(msg, channel)
             return
 
-        # P1.5 · 命名分支管理命令（优先级同 "重启"，避免被 Claude pending 抢走）
+        # P1.5 · 命名分支管理命令
         if _is_list_branches_command(text):
             self._handle_list_branches(msg, channel)
+            _log("admin -> list_branches", intent="list_branches")
             return
         m_resume = RESUME_VERB_RE.match(text)
         if m_resume:
@@ -412,28 +491,30 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
             branch_name, follow_up = _resolve_branch_by_prefix(msg.from_user_id, rest)
             if branch_name:
                 self._handle_resume_branch(msg, channel, branch_name, follow_up)
+                _log("admin -> resume_branch", intent=f"resume:{branch_name}")
                 return
-            # rest 没匹配任何已有分支 → 不消耗，落到下游（可能是 "继续分析以色列"）
         m_delete = DELETE_VERB_RE.match(text)
         if m_delete:
             rest = m_delete.group(1).strip()
-            branch_name, _ = _resolve_branch_by_prefix(msg.from_user_id, rest)
+            branch_name, _ignore = _resolve_branch_by_prefix(msg.from_user_id, rest)
             if branch_name:
                 self._handle_delete_branch(msg, channel, branch_name)
+                _log("admin -> delete_branch", intent=f"delete:{branch_name}")
                 return
-            # 没匹配到已有分支 → 还是把 rest 当分支名传过去，由 handler 报"没找到"
             self._handle_delete_branch(msg, channel, rest)
+            _log("admin -> delete_branch_missing", intent=f"delete:{rest}")
             return
 
-        # P1.2 · 优先处理 Claude 元代理的 pending 状态（无 TTL，必须手动退出）
+        # P1.2 · Claude pending（_check_claude_pending 自己内部 log）
         if self._check_claude_pending(msg, channel):
             return
 
         # 优先检查是否在回应一个待确认的意图
         if self._check_pending_confirmation(msg, channel):
+            _log("pending_confirmation", intent="confirm_analyze_reply")
             return
 
-        # P1.2 · Claude Code 元入口：强词直通 / 弱词过 DeepSeek YES-NO
+        # P1.2 · Claude Code 元入口（_check_claude_trigger 自己内部 log）
         if self._check_claude_trigger(msg, channel):
             return
 
@@ -441,8 +522,10 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
         if intent is None:
             # P2 · 先看 wechat/tools/ 里有没有命令式工具能接住
             if self._try_tools(msg):
+                _log("tools_match", intent="tool")
                 return
-            # 工具也没命中 → LLM 闲聊兜底（在后台线程，避免阻塞 poll 循环）
+            # 工具也没命中 → LLM 闲聊兜底
+            _log("chat_fallback", intent="chat")
             threading.Thread(
                 target=self._handle_chat_fallback,
                 args=(msg,),
@@ -451,6 +534,7 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
             ).start()
             return
 
+        _log(f"parse_intent -> {intent.action}", intent=intent.action)
         if intent.action == "help":
             channel.send_text(msg.from_user_id, format_help())
         elif intent.action == "heat":
@@ -513,6 +597,25 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
             os._exit(0)
 
         threading.Thread(target=_delayed_exit, daemon=True, name="force-exit").start()
+
+    # ── 12.2 · 路由日志管理命令 ──────────────────────────────────────────────
+
+    def _handle_routing_log(self, msg: IncomingMessage, channel: IlinkChannel):
+        """显示该用户最近 15 条路由决策 + miss 率。"""
+        records = routing_log.recent_routes(msg.from_user_id, limit=15)
+        if not records:
+            channel.send_text(msg.from_user_id, "还没有路由记录哎。")
+            return
+        rate = routing_log.miss_rate(msg.from_user_id, recent_n=100)
+        lines = [f"最近 {len(records)} 条路由（miss 率 {rate*100:.0f}%）："]
+        for r in records:
+            t = time.strftime("%H:%M:%S", time.localtime(r["ts"]))
+            miss_mark = "❌ " if r["routing_miss"] else "  "
+            conf = f" ({r['confidence']})" if r["confidence"] is not None else ""
+            lines.append(
+                f"{miss_mark}{t} {r['msg_text'][:18]:18s} → {r['decision_path']}{conf}"
+            )
+        channel.send_text(msg.from_user_id, "\n".join(lines))
 
     # ── P1.5 · Claude 命名工作分支管理 ────────────────────────────────────────
 
@@ -696,6 +799,10 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
         if kind == "weak":
             decision, confidence = self._classify_weak_trigger(text)
             if decision == "NO":
+                routing_log.log_route(msg.from_user_id, text,
+                                      "claude_trigger -> weak_NO",
+                                      intent="not_claude", confidence=confidence,
+                                      model_used="deepseek")
                 return False  # 不是改代码 → 不拦截，让原流程接管
             # UNCLEAR 或 YES 但置信度 < 60 → CLARIFY 反问，不冒进 phase-1
             if decision == "UNCLEAR" or (decision == "YES" and confidence < 60):
@@ -708,6 +815,10 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
                         provider=self._get_llm(),
                     ),
                 )
+                routing_log.log_route(msg.from_user_id, text,
+                                      "claude_trigger -> CLARIFY",
+                                      intent="clarify", confidence=confidence,
+                                      model_used="deepseek")
                 return True
 
         # 白名单（fail-closed：未配置或不在名单 → 拒绝）
@@ -760,6 +871,14 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
         ack = voice_ack("看这个改代码需求，先想想方案", "ack",
                         user_msg=text, provider=self._get_llm())
         channel.send_text(msg.from_user_id, ack)
+        # 12.2 · 记录"进入 phase-1"路由决策（kind=strong/weak）
+        routing_log.log_route(
+            msg.from_user_id, text,
+            f"claude_trigger -> {kind} -> phase1",
+            intent="claude_trigger",
+            confidence=100 if kind == "strong" else None,
+            model_used=None if kind == "strong" else "deepseek",
+        )
         threading.Thread(
             target=self._run_claude_phase1,
             args=(msg, False),
@@ -788,16 +907,26 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
                 msg.from_user_id,
                 voice_ack("用户说不弄了", "cancel_done", user_msg=text, provider=provider),
             )
+            # 12.2 · 用户取消 = 上一次"进 phase-1"决策可能误触发了；标 miss
+            last = routing_log.get_last_route_for_user(msg.from_user_id)
+            if last and last.get("decision_path", "").startswith("claude_trigger"):
+                routing_log.mark_miss(last["id"])
+            routing_log.log_route(msg.from_user_id, text, "claude_pending -> cancel",
+                                  intent="cancel")
             return True
 
         # 阶段进行中：除取消外其他一律提示稍等
         if running == "phase1":
             channel.send_text(msg.from_user_id,
                 voice_ack("还在分析", "running", user_msg=text, provider=provider))
+            routing_log.log_route(msg.from_user_id, text,
+                                  "claude_pending -> running_phase1", intent="running")
             return True
         if running == "phase2":
             channel.send_text(msg.from_user_id,
                 voice_ack("还在改代码", "running", user_msg=text, provider=provider))
+            routing_log.log_route(msg.from_user_id, text,
+                                  "claude_pending -> running_phase2", intent="running")
             return True
 
         # 已等待用户确认：confirm → phase-2；refine → 二次 phase-1
@@ -812,6 +941,8 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
                 daemon=True,
                 name="claude-phase2",
             ).start()
+            routing_log.log_route(msg.from_user_id, text,
+                                  "claude_pending -> confirm -> phase2", intent="confirm")
             return True
 
         # refine：当成自然语言补充意见 → 二次 phase-1
@@ -819,6 +950,8 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
         channel.send_text(msg.from_user_id,
             voice_ack("收到补充意见，再改改方案", "refine_doing",
                       user_msg=text, provider=provider))
+        routing_log.log_route(msg.from_user_id, text,
+                              "claude_pending -> refine -> phase1", intent="refine")
         threading.Thread(
             target=self._run_claude_phase1,
             args=(msg, True),
@@ -939,7 +1072,8 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
         else:
             current_block = text
 
-        prompt = PHASE_1_PROMPT.format(
+        # 12.3 · 在 PHASE_1_PROMPT 前注入 SOUL + AGENTS + 现有 tools 摘要
+        prompt = self._persona_prefix(include_skills=True) + PHASE_1_PROMPT.format(
             recent_msgs=recent_lines,
             current_request=current_block,
         )
@@ -996,7 +1130,8 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
             logger.warning(f"[wechat-dispatch] verify baseline snapshot failed: {e}")
             verify_baseline = None
 
-        prompt = PHASE_2_PROMPT.format(
+        # 12.3 · 在 PHASE_2_PROMPT 前注入 SOUL + AGENTS（不需要 skills 摘要，phase-2 只动方案）
+        prompt = self._persona_prefix(include_skills=False) + PHASE_2_PROMPT.format(
             user_id=user_id,
             proposal=proposal,
             original_request=original_request,
@@ -1202,23 +1337,38 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
         provider = self._get_llm()
         if provider is None:
             if msg.is_voice:
-                self.channel.send_text(
-                    msg.from_user_id,
-                    f"🎤 我听到：{msg.text}\n\n🤖 LLM 不可用，请检查 DeepSeek 配置。"
-                )
+                self.channel.send_text(msg.from_user_id, f"我听到：{msg.text}（LLM 没连上）")
             return
 
+        # 12.2 · 历史感知：把最近 3 条对话喂给 intent rescue 帮助判断指代
+        buf = list(self._recent_msgs.get(msg.from_user_id, []))
+        # 剔除当前这条（最后一条）
+        if buf and buf[-1] == msg.text:
+            buf = buf[:-1]
+        recent_lines = "\n".join(f"- {m}" for m in buf[-3:]) if buf else "（无历史）"
+        user_prompt_with_history = (
+            f"<recent>\n{recent_lines}\n</recent>\n\n"
+            f"<current>{msg.text}</current>"
+        )
+
         try:
+            # 12.3 · system prompt 前面注入 SOUL + AGENTS（不需要 skills）
+            sys_prompt = self._persona_prefix(include_skills=False) + self.INTENT_RESCUE_SYSTEM
             raw = provider.complete(
-                self.INTENT_RESCUE_SYSTEM,
-                msg.text,
-                max_tokens=600,
-                temperature=0.3,
+                sys_prompt,
+                user_prompt_with_history,
+                max_tokens=300,  # 12.2 chat reply ≤ 30 字了，不需要 600
+                temperature=0.6,  # 让 chat 回复多样
                 json_mode=True,
             )
         except Exception as e:
             logger.exception(f"[wechat-dispatch] intent rescue failed: {e}")
-            self.channel.send_text(msg.from_user_id, f"❌ LLM 出错：{e}")
+            # 12.2 · 不暴露技术异常给用户；让 voice_ack 口语化
+            self.channel.send_text(
+                msg.from_user_id,
+                voice_ack("意图识别失败", "fail",
+                          user_msg=msg.text, provider=provider),
+            )
             return
 
         # 解析 JSON
@@ -1244,13 +1394,17 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
                     country_zh=topic if topic in COUNTRY_ALIASES else None,
                     week=week,
                 )
-                # 语音消息提示一下"我理解为 X"
+                # 12.2 · 语音消息确认时也口语化（之前 "🎤 我听到 / 🤖 理解为" 是机器人腔）
                 if msg.is_voice:
+                    week_word = "本周" if week else "今天"
                     self.channel.send_text(
                         msg.from_user_id,
-                        f"🎤 我听到：{msg.text}\n🤖 理解为：分析「{topic}」"
-                        f"{'（本周）' if week else ''}"
+                        f"你说的是『{msg.text}』吧，分析{week_word}的 {topic}。",
                     )
+                # 12.2 · 记录路由：LLM 救援命中分析意图
+                routing_log.log_route(msg.from_user_id, msg.text,
+                                      "intent_rescue -> analyze",
+                                      intent=f"analyze:{topic}", model_used="deepseek")
                 self._handle_analyze(msg, intent)
                 return
 
@@ -1258,8 +1412,11 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
             if msg.is_voice:
                 self.channel.send_text(
                     msg.from_user_id,
-                    f"🎤 我听到：{msg.text}\n🤖 理解为：查看热度榜"
+                    f"听到了，看下热度榜。"
                 )
+            routing_log.log_route(msg.from_user_id, msg.text,
+                                  "intent_rescue -> heat",
+                                  intent="heat", model_used="deepseek")
             self._handle_heat(msg)
             return
 
@@ -1276,12 +1433,18 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
                 if msg.is_voice:
                     self.channel.send_text(
                         msg.from_user_id,
-                        f"🎤 我听到：{msg.text}\n🤖 理解为：{country_zh} 的文章"
+                        f"听到了，{country_zh}的报道。",
                     )
+                routing_log.log_route(msg.from_user_id, msg.text,
+                                      f"intent_rescue -> articles",
+                                      intent=f"articles:{country_zh}", model_used="deepseek")
                 self._handle_articles(msg, intent)
                 return
 
         elif action == "brief_list":
+            routing_log.log_route(msg.from_user_id, msg.text,
+                                  "intent_rescue -> brief_list",
+                                  intent="brief_list", model_used="deepseek")
             self._handle_briefs(msg)
             return
 
@@ -1290,12 +1453,19 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
         if not reply:
             # 没有 reply 字段，再调一次纯闲聊（极少情况）
             try:
+                # 12.3 · CHAT_FALLBACK 也注入 persona
+                sys_prompt = self._persona_prefix() + self.CHAT_FALLBACK_SYSTEM
                 reply = provider.complete(
-                    self.CHAT_FALLBACK_SYSTEM, msg.text,
-                    max_tokens=600, temperature=0.7,
+                    sys_prompt, msg.text,
+                    max_tokens=120, temperature=0.7,
                 )
             except Exception as e:
-                reply = f"❌ {e}"
+                logger.warning(f"[wechat-dispatch] chat fallback failed: {e}")
+                reply = voice_ack("说话出错了", "fail",
+                                  user_msg=msg.text, provider=provider)
+        routing_log.log_route(msg.from_user_id, msg.text,
+                              "intent_rescue -> chat",
+                              intent="chat", model_used="deepseek")
         self._send_voice_aware(msg, reply)
 
     @staticmethod
@@ -1313,9 +1483,10 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
             return None
 
     def _send_voice_aware(self, msg: IncomingMessage, reply: str):
-        """把转录确认 + 回复合并成一条（如是语音）。"""
+        """12.2 · 语音消息确认 + 回复合并；去掉 🎤 / 🤖 机器人腔。"""
         if msg.is_voice:
-            full = f"🎤 我听到：{msg.text}\n\n🤖 {reply}"
+            # 自然口语：直接说"你刚说的是 X 吧，<回复>" 简化为单段
+            full = f"听到了：{msg.text}\n\n{reply}"
         else:
             full = reply
         self.channel.send_text(msg.from_user_id, full)
@@ -1332,15 +1503,20 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
         if tool is None:
             return False
         logger.info(f"[wechat-dispatch] tool match: {tool.name} (keywords={tool.keywords})")
+        # 12.4 · 让 handler 能拿到 user_id（reminders 工具需要）
+        self._current_user_id = msg.from_user_id
         try:
             reply = tool.handle(msg.text, self)
         except Exception as e:
             logger.exception(f"[wechat-dispatch] tool {tool.name} crashed: {e}")
             self.channel.send_text(
                 msg.from_user_id,
-                f"❌ 工具 {tool.name} 出错: {type(e).__name__}: {str(e)[:120]}"
+                voice_ack(f"工具 {tool.name} 挂了", "fail",
+                          user_msg=msg.text, provider=self._get_llm()),
             )
             return True
+        finally:
+            self._current_user_id = None
         if not reply:
             return False
         self.channel.send_text(msg.from_user_id, str(reply))
