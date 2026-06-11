@@ -59,6 +59,12 @@ class IlinkConfig:
     # Claude Code 元入口（P1.2）：可以触发 `claude --print` 的 user_id 列表
     # 留空 → fail-closed（谁都不能触发，包括自己）
     claude_allowed_users: list[str] = field(default_factory=list)
+    # P12.7 · DM Pairing 安全模式
+    # dm_policy: "open" = 任何人都能跟 bot 聊（默认，跟旧行为一致）
+    #           "pairing" = 陌生人要先发配对码，管理员批准后才能用
+    dm_policy: str = "open"
+    # 管理员 user_id（pairing 模式下收配对申请通知 + 能批准/拒绝）
+    admin_user_id: str = ""
     # API 后端地址（同进程时就是 localhost）
     api_base: str = "http://localhost:8000/api"
 

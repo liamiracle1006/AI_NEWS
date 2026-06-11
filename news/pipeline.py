@@ -210,54 +210,10 @@ def track_entities(
     )
 
 
-def compute_info_lag(facts_bundle: List[ArticleFacts]) -> List[CampFirstSeen]:
-    """Return per-camp first-seen dates, sorted by arrival time.
-
-    Compares when each bias camp first published on this topic during the week.
-    Lag is measured in hours relative to the earliest-reporting camp.
-    Pure computation — no LLM call.
-    """
-    from datetime import timezone, timedelta
-    sgt = timezone(timedelta(hours=8))
-
-    # Find the earliest published_at per camp (in UTC+8)
-    camp_min: dict[str, datetime] = {}
-    camp_source: dict[str, str] = {}
-    for f in facts_bundle:
-        if not f.published_at:
-            continue
-        dt = f.published_at.astimezone(sgt)
-        if f.bias_tag not in camp_min or dt < camp_min[f.bias_tag]:
-            camp_min[f.bias_tag] = dt
-            camp_source[f.bias_tag] = f.source_name
-
-    if not camp_min:
-        return []
-
-    global_first = min(camp_min.values())
-
-    return [
-        CampFirstSeen(
-            bias_tag=bias_tag,
-            source_name=camp_source[bias_tag],
-            first_date=first_dt.strftime("%Y-%m-%d"),
-            lag_hours=round((first_dt - global_first).total_seconds() / 3600, 1),
-        )
-        for bias_tag, first_dt in sorted(camp_min.items(), key=lambda x: x[1])
-    ]
-
-
-def compute_daily_counts(facts_bundle: List[ArticleFacts]) -> dict[str, int]:
-    """Count articles per calendar day (UTC+8) for the coverage momentum chart."""
-    from collections import Counter
-    from datetime import timezone, timedelta
-    sgt = timezone(timedelta(hours=8))
-    counts: Counter[str] = Counter()
-    for f in facts_bundle:
-        if f.published_at:
-            day = f.published_at.astimezone(sgt).date().isoformat()
-            counts[day] += 1
-    return dict(sorted(counts.items()))
+# P12.5 · 纯 pandas 模块已抽到 news/weekly_stats.py；这里 re-export 保持
+# 向后兼容（api/routes.py 和别的地方仍可 `from news.pipeline import
+# compute_info_lag` 工作）
+from .weekly_stats import compute_info_lag, compute_daily_counts  # noqa: E402, F401
 
 
 def weekly_story_arc(

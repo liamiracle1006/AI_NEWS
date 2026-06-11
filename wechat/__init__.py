@@ -70,6 +70,8 @@ def load_config_from_env() -> IlinkConfig:
         analyze_max_articles=_envint("WECHAT_ANALYZE_MAX_ARTICLES", 10),
         analyze_timeout_seconds=_envint("WECHAT_ANALYZE_TIMEOUT", 600),
         claude_allowed_users=_envlist("CLAUDE_ALLOWED_USERS"),
+        dm_policy=os.getenv("WECHAT_DM_POLICY", "open"),
+        admin_user_id=os.getenv("WECHAT_ADMIN_USER_ID", ""),
         api_base=os.getenv("WECHAT_API_BASE", "http://localhost:8000/api"),
     )
 

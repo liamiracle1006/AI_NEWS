@@ -421,9 +421,15 @@ chat 的 reply **必须**：
 
     def _dispatch(self, msg: IncomingMessage, channel: IlinkChannel):
         """每条收到的消息都进这里。在调用线程内执行，慢操作要起新线程。"""
-        # 白名单（空 = 任何人都可用）
+        # P12.7 · DM Pairing 安全门（dm_policy=pairing 时陌生人先配对）
+        if self.config.dm_policy == "pairing":
+            if not self._pairing_gate(msg, channel):
+                return
+        # 白名单（空 = 任何人都可用；优先级低于 pairing gate）
         if self.config.whitelist_user_ids and msg.from_user_id not in self.config.whitelist_user_ids:
-            return
+            # pairing 模式下白名单可以放空（pairing 自己当门）；open 模式下保留旧行为
+            if self.config.dm_policy != "pairing":
+                return
 
         text = (msg.text or "").strip()
         prefix = "🎤" if msg.is_voice else "💬"
@@ -596,6 +602,109 @@ chat 的 reply **必须**：
             os._exit(0)
 
         threading.Thread(target=_delayed_exit, daemon=True, name="force-exit").start()
+
+    # ── P12.7 · DM Pairing 流程 ───────────────────────────────────────────
+
+    def _pairing_gate(self, msg: IncomingMessage, channel: IlinkChannel) -> bool:
+        """陌生人入口控制。返回 True = 让消息通过；False = 拦截（已处理或拒绝）。
+
+        允许通过的条件：
+        - 已 paired（status='approved'）
+        - 在 claude_allowed_users 里（管理员）
+        - 是 admin_user_id（管理员本人）
+        - 正在 admin 批准 / 拒绝其他用户的请求
+        """
+        import random
+        uid = msg.from_user_id
+        text = (msg.text or "").strip()
+
+        # 管理员（admin_user_id 或 claude_allowed_users 任一）直接通过
+        is_admin = (
+            uid == self.config.admin_user_id
+            or (self.config.claude_allowed_users and uid in self.config.claude_allowed_users)
+        )
+
+        if is_admin:
+            # 管理员命令：批准 / 拒绝 / 列出申请
+            if text in ("列出配对申请", "查配对申请", "配对申请"):
+                pending = routing_log.list_pending_pairings()
+                if not pending:
+                    channel.send_text(uid, "现在没人在等配对。")
+                    return False
+                lines = [f"等批准的 {len(pending)} 个："]
+                for p in pending:
+                    lines.append(f"  {p['user_id']} 码={p['pair_code']}")
+                lines.append("\n回『批准配对 <user_id>』或『拒绝配对 <user_id>』")
+                channel.send_text(uid, "\n".join(lines))
+                return False
+            m_approve = re.match(r"^批准配对\s+(\S+)$", text)
+            if m_approve:
+                target = m_approve.group(1)
+                if routing_log.approve_pairing(target):
+                    channel.send_text(uid, f"已批准 {target}。")
+                    try:
+                        channel.send_text(target,
+                            voice_ack("管理员批准你了，可以聊了", "done",
+                                      provider=self._get_llm()))
+                    except Exception:
+                        pass
+                else:
+                    channel.send_text(uid, f"找不到 {target} 的待批申请。")
+                return False
+            m_reject = re.match(r"^拒绝配对\s+(\S+)$", text)
+            if m_reject:
+                target = m_reject.group(1)
+                routing_log.upsert_pairing(target, "", "rejected")
+                channel.send_text(uid, f"已拒绝 {target}。")
+                return False
+            return True  # 管理员其他消息正常路由
+
+        # 非管理员路径
+        if routing_log.is_paired(uid):
+            return True  # 已批准
+
+        existing = routing_log.get_pairing(uid)
+
+        # 用户发 /pair <code> 确认配对码
+        m_pair = re.match(r"^/?pair\s+(\d{6})$", text, re.IGNORECASE)
+        if m_pair:
+            code = m_pair.group(1)
+            if existing and existing["pair_code"] == code and existing["status"] == "awaiting_code":
+                routing_log.upsert_pairing(uid, code, "awaiting_admin")
+                channel.send_text(uid, "码对了，等管理员批准。")
+                # 通知管理员
+                admin = self.config.admin_user_id or (
+                    self.config.claude_allowed_users[0] if self.config.claude_allowed_users else None
+                )
+                if admin:
+                    try:
+                        channel.send_text(admin,
+                            f"有人申请用 bot：{uid}（码 {code}）\n"
+                            f"回『批准配对 {uid}』批准 / 『拒绝配对 {uid}』拒绝")
+                    except Exception:
+                        pass
+            else:
+                channel.send_text(uid, "码不对，重新发我码。")
+            return False
+
+        # 首次见此用户 → 生成码
+        if existing is None or existing["status"] not in ("awaiting_code", "rejected"):
+            code = f"{random.randint(100000, 999999)}"
+            routing_log.upsert_pairing(uid, code, "awaiting_code")
+            channel.send_text(uid,
+                f"想用我的话，发 /pair {code} 给我验一下。")
+            return False
+        if existing["status"] == "rejected":
+            channel.send_text(uid, "管理员拒了你的申请，找他聊吧。")
+            return False
+        if existing["status"] == "awaiting_code":
+            # 还没发码 → 重新提示
+            channel.send_text(uid,
+                f"发 /pair {existing['pair_code']} 给我验一下。")
+            return False
+        # awaiting_admin → 等批准
+        channel.send_text(uid, "等管理员批呢，再等等。")
+        return False
 
     # ── 12.2 · 路由日志管理命令 ──────────────────────────────────────────────
 
@@ -1006,6 +1115,28 @@ chat 的 reply **必须**：
             argv += ["--permission-mode", "bypassPermissions"]
         elif allow_edits:
             argv += ["--permission-mode", "acceptEdits"]
+
+        # P12.6 · 沙盒分级：phase-1 是"只分析不动手"，即便 bypassPermissions
+        # 模式下也用 --disallowedTools 把写操作硬拦截。phase-2 (allow_edits=True)
+        # 完全放开。这是 belt-and-suspenders：prompt 说"严禁修改"是软约束，
+        # disallowedTools 是 CLI 层硬约束。
+        if not allow_edits:
+            disallowed = " ".join([
+                "Write", "Edit", "MultiEdit", "NotebookEdit",
+                "mcp__filesystem__write_file",
+                "mcp__filesystem__edit_file",
+                "mcp__filesystem__move_file",
+                "mcp__filesystem__create_directory",
+                "mcp__github__create_issue",
+                "mcp__github__update_issue",
+                "mcp__github__create_or_update_file",
+                "mcp__github__create_pull_request",
+                "mcp__github__merge_pull_request",
+                "mcp__github__create_branch",
+                "mcp__github__push_files",
+                "mcp__github__add_issue_comment",
+            ])
+            argv += ["--disallowedTools", disallowed]
 
         # session 控制（P1.5）：resume 优先于 session-id
         if resume_session_id:

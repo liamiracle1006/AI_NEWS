@@ -67,6 +67,15 @@ def _ensure_schema(conn: sqlite3.Connection):
             created_at REAL NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(fired, ts_due);
+
+        -- P12.7 · DM Pairing：陌生人发 "/pair <码>" → 管理员批准 → 进入白名单
+        CREATE TABLE IF NOT EXISTS pairings (
+            user_id TEXT PRIMARY KEY,
+            pair_code TEXT NOT NULL,
+            status TEXT NOT NULL,  -- 'awaiting_code' | 'awaiting_admin' | 'approved' | 'rejected'
+            created_at REAL NOT NULL,
+            approved_at REAL
+        );
     """)
 
 
@@ -260,3 +269,76 @@ def cancel_reminder(reminder_id: int) -> bool:
                 return cursor.rowcount > 0
     except Exception:
         return False
+
+
+# ── pairings 表（P12.7 DM Pairing）─────────────────────────────────────────
+
+
+def get_pairing(user_id: str) -> Optional[dict]:
+    try:
+        with _LOCK:
+            with _conn() as c:
+                row = c.execute(
+                    "SELECT user_id, pair_code, status, created_at, approved_at "
+                    "FROM pairings WHERE user_id=?",
+                    (user_id,),
+                ).fetchone()
+                if not row:
+                    return None
+                return {"user_id": row[0], "pair_code": row[1],
+                        "status": row[2], "created_at": row[3],
+                        "approved_at": row[4]}
+    except Exception:
+        return None
+
+
+def upsert_pairing(user_id: str, pair_code: str, status: str) -> bool:
+    try:
+        with _LOCK:
+            with _conn() as c:
+                c.execute(
+                    """INSERT INTO pairings (user_id, pair_code, status, created_at)
+                       VALUES (?, ?, ?, ?)
+                       ON CONFLICT(user_id) DO UPDATE SET
+                         pair_code=excluded.pair_code,
+                         status=excluded.status""",
+                    (user_id, pair_code, status, time.time()),
+                )
+        return True
+    except Exception as e:
+        logger.warning(f"[routing_log] upsert_pairing failed: {e}")
+        return False
+
+
+def approve_pairing(user_id: str) -> bool:
+    try:
+        with _LOCK:
+            with _conn() as c:
+                cursor = c.execute(
+                    "UPDATE pairings SET status='approved', approved_at=? "
+                    "WHERE user_id=? AND status IN ('awaiting_code', 'awaiting_admin')",
+                    (time.time(), user_id),
+                )
+                return cursor.rowcount > 0
+    except Exception:
+        return False
+
+
+def list_pending_pairings() -> list[dict]:
+    """列出等管理员批准的配对申请。"""
+    try:
+        with _LOCK:
+            with _conn() as c:
+                rows = c.execute(
+                    "SELECT user_id, pair_code, created_at FROM pairings "
+                    "WHERE status='awaiting_admin' ORDER BY created_at ASC"
+                ).fetchall()
+                return [{"user_id": r[0], "pair_code": r[1],
+                         "created_at": r[2]} for r in rows]
+    except Exception:
+        return []
+
+
+def is_paired(user_id: str) -> bool:
+    p = get_pairing(user_id)
+    return p is not None and p["status"] == "approved"

@@ -26,6 +26,7 @@ import uuid
 from pathlib import Path
 from typing import Callable, Optional
 
+from .channels import Channel
 from .ilink_api import (
     CDN_BASE_URL,
     DEFAULT_BASE_URL,
@@ -90,8 +91,8 @@ def _print_qr(qrcode_url: str):
         print(f"\n  {qrcode_url}\n  (pip install qrcode 可在终端显示二维码)\n")
 
 
-class IlinkChannel:
-    """微信 iLink 通道的最小自包含实现。"""
+class IlinkChannel(Channel):
+    """微信 iLink 通道的最小自包含实现。继承 channels.Channel 抽象基类（P12.6）。"""
 
     def __init__(self, credentials_path: str,
                  base_url: str = "",
