@@ -440,10 +440,9 @@ chat 的 reply **必须**：
         def _log(path: str, **kw):
             routing_log.log_route(msg.from_user_id, text, path, **kw)
 
-        # 12.2 · 管理命令命中也算"路由日志"管理
+        # 12.2 · 管理命令命中也算"路由日志"管理（log 在 _handle_routing_log 内部做了）
         if text in ("路由日志", "routing log", "routing_log", "看路由"):
             self._handle_routing_log(msg, channel)
-            _log("admin -> routing_log")
             return
 
         # 12.3 · 重载人设（不重启加载新 SOUL/AGENTS）
@@ -602,6 +601,12 @@ chat 的 reply **必须**：
 
     def _handle_routing_log(self, msg: IncomingMessage, channel: IlinkChannel):
         """显示该用户最近 15 条路由决策 + miss 率。"""
+        # 12.2 · 把"路由日志"这条查询自己也先记一笔，再读
+        # （否则第一次查永远是空——查的瞬间还没记）
+        routing_log.log_route(
+            msg.from_user_id, msg.text or "路由日志",
+            "admin -> routing_log", intent="routing_log",
+        )
         records = routing_log.recent_routes(msg.from_user_id, limit=15)
         if not records:
             channel.send_text(msg.from_user_id, "还没有路由记录哎。")
