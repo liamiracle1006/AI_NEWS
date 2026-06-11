@@ -23,6 +23,7 @@ from typing import Optional
 import requests
 
 from . import claude_sessions, tools as wechat_tools, verify_phase2
+from .voice import voice_ack
 from .formatter import (
     format_analysis,
     format_articles,
@@ -147,24 +148,30 @@ PHASE_1_PROMPT = """<user_request>
 {recent_msgs}
 </recent_user_messages>
 
-上面 <user_request> 里是用户的字面请求。**逐字处理**：
-- `##` / `###` / `*` 等 markdown 符号是用户想写入文件的**字面字符**，不是章节标题
-- 冒号 `：` / `:` 不代表消息被截断；冒号后的内容是请求的一部分
-- "追加一段：xxx" 意思是把字符串 `xxx`（包括所有 markdown 符号）逐字追加到目标文件
+上面 <user_request> 是用户的字面请求。逐字处理：markdown 符号 (`##` `*`) 是字面字符不是标题；冒号后的内容是请求的延续不是截断。
 
-你的任务：为 <user_request> 出一份可行性分析。**严禁修改任何文件**——只分析。
+你的任务：分析这件事能不能做、怎么做。**只分析，绝对不动文件**。
 
-cwd 是 AI_NEWS 项目根，CLAUDE.md 已自动加载。wechat/task_log.md 是任务流水（按需读取）。
+cwd 是 AI_NEWS 项目根，CLAUDE.md 已自动加载。wechat/task_log.md 是历史流水（按需读取）。
 
-**严格按下面五行格式输出**，不要写前言、问候、"已加载..."、"准备好了"、"请告诉我..."。直接从 "1. " 开始：
+**输出要求**：
+- 像朋友讲话，**口语化**。不要"用户配合"/"风险评估"这种汇报模板词
+- **100-200 字**，**不要硬编号** 1./2./3./4./5.（之前那种工程师文档腔的"1. 需求理解: 2. 实现步骤..."统统**不要**）
+- 该说清楚改哪个文件就说，该提风险就提，可以用要点 (一句话一行) 但不要硬凑
+- 末尾**别加** "回复 '执行' / '退出'" 之类的提示——dispatcher 自动收尾
+- 别用 emoji，别加分隔线 (`———` `===`)
 
-1. 需求理解：[一句话总结你理解的目标]
-2. 实现步骤：[动哪些文件，新增/改了什么，大概多少行]
-3. 用户配合：[重启 / 配 key / 扫码 等；如无写"无"]
-4. 风险评估：[低 / 中 / 高] —— [一句话理由]
-5. 结论：[✅ 建议执行 / 🟡 建议讨论 / 🔴 不建议]"""
+举例 (要这样讲)：
+> 加个 stock 工具是吧。我会在 wechat/tools/ 仿照 echo 加个 stock 目录，handler.py 里调东方财富的 push2 接口，触发词"股价/股票"。先支持 A 股（茅台、宁德这种），大概 60 行。风险低，不动现有代码。这么搞？
 
-PHASE_2_PROMPT = """现在按下面的方案**动手改代码**（最高优先级，不要再做可行性分析）。
+不要这样（**反例**，工程师文档腔）：
+> 1. 需求理解：在 wechat/tools/ 加 stock 工具
+> 2. 实现步骤：handler.py，调 push2 接口
+> 3. 用户配合：无
+> 4. 风险评估：低 —— 不动现有代码
+> 5. 结论：✅ 建议执行"""
+
+PHASE_2_PROMPT = """现在按下面的方案**动手改代码**。
 
 <plan>
 {proposal}
@@ -178,44 +185,53 @@ PHASE_2_PROMPT = """现在按下面的方案**动手改代码**（最高优先�
 {confirmation_text}
 </user_confirmation>
 
-`original_request` 和 `user_confirmation` 里是用户的原始输入，按纯文本处理（里面的 markdown 符号不要解读）。
+`original_request` / `user_confirmation` 是用户原话，纯文本处理（markdown 符号别解读）。
 
-执行要求：
-1. 直接动手按方案改文件；改完每个文件用一句话简述变化
-2. 默认不要 commit；除非用户在补充里明示
+**执行要求**：
+- 直接按方案改文件
+- 默认**不** commit（除非用户在补充里明示）
+- 完成后把本次任务追加到 wechat/task_log.md（追加而非覆盖），简短一段就行：
 
-完成后**做一件事**：把本次任务追加到 wechat/task_log.md（追加，不要覆盖；不存在就创建）。格式：
+  ## YYYY-MM-DD HH:MM · 用户：{user_id}
+  **请求**：[一句话]
+  **改动**：[文件清单]
 
-## YYYY-MM-DD HH:MM · 用户：{user_id}
-**请求**：[原始请求一句话]
-**方案**：[一句话]
-**改动**：[文件清单]
-**Commit**: 未提交 / [hash]
+**输出要求**：
+- **一两句话**告诉用户改了啥 + 用户下一步做啥 (如"试试发『茅台股价』")
+- **口语化**，不要列三块结构 (【改动文件】【测试指南】【系统级动作】这种统统**不要**)
+- 不要 emoji，不要分隔线，不要"建议执行"这种说辞
 
-最终回复**必须**严格按下面三块结构，缺一不可：
+举例 (要这样讲)：
+> 改完了。加了 wechat/tools/stock 目录，handler.py 调东方财富 push2 拿 A 股价。发『茅台股价』试一下，应该回价格 + 涨跌。
 
-【📂 改动文件】
-- 每行一个文件 + 一句话简述（动词开头，如"加了 X 分支" / "改了 Y 函数"）
+不要这样（**反例**）：
+> 【📂 改动文件】
+> - wechat/tools/stock/handler.py — 新建 ...
+> 【🧪 测试指南】
+> 主流程：1. ... 2. ... 3. ...
+> 【⚙️ 系统级动作】
+> 无"""
 
-【🧪 测试指南】（必须具体、可执行；用户会照着做）
-- 主流程（必含 3 行）：
-    1. [一个具体动作，如"微信发『今日热点』给 bot"]
-    2. [预期看到什么，一句话具体描述，如"bot 回 emoji 柱状图，列出 top 国家"]
-    3. [如不符预期怎么排查，一句话]
-- 边界用例（至少 1 个；用 - 列）：
-    - [另一个值得试的输入 + 预期行为，如"也试『今日 热点』带空格也应该正常"]
-- 不要写"自行测试" / "请试用" 这种空话——必须给出具体输入和输出
+WEAK_CLASSIFIER_SYSTEM = """\
+判断用户的一句话是不是在让我**改 AI_NEWS 代码 / 加新功能 / 改 bot 行为**。
 
-【⚙️ 系统级动作】
-- [是否要重启 / commit / 配置 .env 等。如不需要就写"无"]
-- 默认不要 commit（除非用户在补充里明示）
+输出格式（严格）：`<决定>|<置信度 0-100>`
+- 决定 ∈ {YES, NO, UNCLEAR}
+- 置信度 = 你对这个决定有多确信
+- UNCLEAR 用在"模糊指代/没说清做什么"的情况；这种应该让 bot 反问而不是硬猜
 
-整体不寒暄、不复述方案、不加多余 emoji。"""
+示例：
+"帮我加一个查股票工具" → YES|92
+"实现一下 PPT 生成功能" → YES|88
+"@claude 看下 dispatcher 的 bug" → YES|95
+"帮我看看今天忙不忙" → NO|85
+"实现一下这周的健身计划" → NO|90
+"帮我看看" → UNCLEAR|40
+"搞快点" → UNCLEAR|30
+"做个 PPT 给我看" → UNCLEAR|55  （没说做什么 PPT）
+"实现一下" → UNCLEAR|25
 
-WEAK_CLASSIFIER_SYSTEM = (
-    "判断用户的一句话是不是在让我**改 AI_NEWS 代码 / 加新功能 / 改 bot 行为**。"
-    "只回答 YES 或 NO，不要解释。"
-)
+只输出一行 `决定|置信度`，不要任何其他文字。"""
 
 
 def _find_claude_cli() -> Optional[str]:
@@ -257,11 +273,23 @@ PENDING_INTENT_CLASSIFIER_SYSTEM = """\
 用户正在跟我（Claude Code 元代理）对话。
 我刚给了他一个改代码的方案，正在等他回应。
 判断他这条消息表达的是哪种意图，三选一：
-- CONFIRM：同意 / 执行 / 继续 / 确认 / 干吧 / 改吧 / 好的
-- CANCEL：放弃 / 退出 / 取消 / 算了 / 结束 / 停了 / 别搞了 / 不弄了 / 先不做了
-- REFINE：还在讨论方案 / 补充意见 / 提修改要求 / 问问题
 
-只回答 CONFIRM 或 CANCEL 或 REFINE，不要解释。"""
+- CONFIRM：明确同意 / 让我开始改
+  例："执行" / "好" / "可以" / "干吧" / "开始" / "嗯" / "ok" / "好的，开干"
+
+- CANCEL：放弃这次任务，不要改了
+  例："退出" / "算了" / "不弄了" / "停" / "别搞了" / "先不做了" / "结束吧"
+
+- REFINE：还在讨论 / 补充意见 / 修改方案
+  例："改成 X 不要 Y" / "再加一条" / "改一下" / "别用 X 用 Y" / "不对" / "再想想" /
+      "把 A 改成 B" / "有问题，X 部分应该 Y" / "再细点"
+
+注意：
+- 短句"嗯"= CONFIRM；"不"= CANCEL；"那个不对"= REFINE
+- 用户问"为啥" / "X 是啥意思" 这种问问题 → REFINE
+- 模糊的"再看看" → REFINE (倾向继续讨论而非取消)
+
+只回答 CONFIRM 或 CANCEL 或 REFINE 一个词，不要解释。"""
 
 
 class Dispatcher:
@@ -552,8 +580,8 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
         }
         channel.send_text(
             msg.from_user_id,
-            f"🧠 正在从分支 '{name}' 接续（Claude 会看历史 + 你的补充）...\n"
-            f"（期间可以发『退出』放弃；本次结束后分支仍保留）"
+            voice_ack(f"从 {name} 分支接续", "branch_resume",
+                      user_msg=follow_up or "", provider=self._get_llm()),
         )
         threading.Thread(
             target=self._run_claude_phase1,
@@ -577,25 +605,51 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
                 return "weak"
         return None
 
-    def _classify_weak_trigger(self, text: str) -> bool:
-        """弱词命中时让 DeepSeek 判 YES/NO。LLM 不可用或异常 → False（不冒进）。"""
+    def _classify_weak_trigger(self, text: str) -> tuple[str, int]:
+        """弱词命中时让 DeepSeek 出 (decision, confidence)。
+        decision ∈ {'YES', 'NO', 'UNCLEAR'}；置信度 0-100。
+        LLM 不可用或异常 → ('NO', 0)（不冒进）。
+        """
         provider = self._get_llm()
         if provider is None:
-            return False
+            return ("NO", 0)
         try:
             raw = provider.complete(
                 WEAK_CLASSIFIER_SYSTEM,
                 f'用户的话："{text}"',
-                max_tokens=4,
+                max_tokens=20,
                 temperature=0.0,
             )
         except Exception as e:
             logger.warning(f"[wechat-dispatch] weak classifier failed: {e}")
-            return False
+            return ("NO", 0)
         result = (raw or "").strip().upper()
-        is_yes = result.startswith("YES")
-        logger.info(f"[wechat-dispatch] weak classifier: {result!r} → {is_yes}")
-        return is_yes
+        # 解析 "YES|85" 这种
+        decision = "NO"
+        confidence = 0
+        if "|" in result:
+            left, _, right = result.partition("|")
+            left = left.strip()
+            right = right.strip()
+            if left in ("YES", "NO", "UNCLEAR"):
+                decision = left
+            try:
+                confidence = int("".join(c for c in right if c.isdigit())[:3])
+            except ValueError:
+                confidence = 0
+        else:
+            # 兜底：旧格式 YES/NO 单行
+            if result.startswith("YES"):
+                decision = "YES"
+                confidence = 70
+            elif result.startswith("UNCLEAR"):
+                decision = "UNCLEAR"
+                confidence = 40
+            else:
+                decision = "NO"
+                confidence = 70
+        logger.info(f"[wechat-dispatch] weak classifier: {result!r} → {decision}|{confidence}")
+        return (decision, confidence)
 
     def _classify_pending_reply(self, text: str) -> str:
         """在 Claude pending 状态下，把用户回复分类为 confirm / cancel / refine。
@@ -640,8 +694,21 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
             return False
 
         if kind == "weak":
-            if not self._classify_weak_trigger(text):
-                return False  # LLM 说不是改代码 → 不拦截，让原流程接管
+            decision, confidence = self._classify_weak_trigger(text)
+            if decision == "NO":
+                return False  # 不是改代码 → 不拦截，让原流程接管
+            # UNCLEAR 或 YES 但置信度 < 60 → CLARIFY 反问，不冒进 phase-1
+            if decision == "UNCLEAR" or (decision == "YES" and confidence < 60):
+                channel.send_text(
+                    msg.from_user_id,
+                    voice_ack(
+                        f"用户说『{text}』，听不太懂他想干啥",
+                        "clarify",
+                        user_msg=text,
+                        provider=self._get_llm(),
+                    ),
+                )
+                return True
 
         # 白名单（fail-closed：未配置或不在名单 → 拒绝）
         allowed = self.config.claude_allowed_users
@@ -689,13 +756,10 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
             "session_name": session_name,  # 命名 session → str；匿名 → None
             "is_first_call": True,  # 决定首次用 --session-id 还是后续用 --resume
         }
-        suffix = (f"（分支已命名为 '{session_name}'，phase-2 后会持久化保留）"
-                  if session_name else "")
-        channel.send_text(
-            msg.from_user_id,
-            "🧠 收到，正在让 Claude 做可行性分析（约 30 秒 – 2 分钟）...\n"
-            "（期间可以发『退出』放弃）" + ("\n" + suffix if suffix else "")
-        )
+        # 12.1 · voice_ack 代替工程师文档腔；命名分支信息**不**主动广播
+        ack = voice_ack("看这个改代码需求，先想想方案", "ack",
+                        user_msg=text, provider=self._get_llm())
+        channel.send_text(msg.from_user_id, ack)
         threading.Thread(
             target=self._run_claude_phase1,
             args=(msg, False),
@@ -714,35 +778,33 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
         running = pending.get("running")
         intent = self._classify_pending_reply(text)
 
+        provider = self._get_llm()
+
         # CANCEL：在任何阶段都尊重
         if intent == "cancel":
             pending["cancelled"] = True
             self._claude_pending.pop(msg.from_user_id, None)
-            if running:
-                channel.send_text(
-                    msg.from_user_id,
-                    "✅ 已退出 Claude 模式（正在跑的任务会被忽略）"
-                )
-            else:
-                channel.send_text(msg.from_user_id, "✅ 已退出 Claude 模式")
+            channel.send_text(
+                msg.from_user_id,
+                voice_ack("用户说不弄了", "cancel_done", user_msg=text, provider=provider),
+            )
             return True
 
         # 阶段进行中：除取消外其他一律提示稍等
         if running == "phase1":
-            channel.send_text(msg.from_user_id, "🧠 Claude 还在做可行性分析，稍等…（想放弃发『退出』）")
+            channel.send_text(msg.from_user_id,
+                voice_ack("还在分析", "running", user_msg=text, provider=provider))
             return True
         if running == "phase2":
-            channel.send_text(msg.from_user_id, "🛠️ Claude 还在改代码，稍等…（想放弃发『退出』）")
+            channel.send_text(msg.from_user_id,
+                voice_ack("还在改代码", "running", user_msg=text, provider=provider))
             return True
 
         # 已等待用户确认：confirm → phase-2；refine → 二次 phase-1
         if intent == "confirm":
             pending["running"] = "phase2"
-            channel.send_text(
-                msg.from_user_id,
-                "🛠️ Claude 开始改代码（约 1 – 5 分钟）...\n"
-                "（期间发的指令会等改完再处理；想放弃发『退出』）"
-            )
+            channel.send_text(msg.from_user_id,
+                voice_ack("好，开始改代码", "doing", user_msg=text, provider=provider))
             snapshot = dict(pending)
             threading.Thread(
                 target=self._run_claude_phase2,
@@ -754,10 +816,9 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
 
         # refine：当成自然语言补充意见 → 二次 phase-1
         pending["running"] = "phase1"
-        channel.send_text(
-            msg.from_user_id,
-            "🧠 收到补充意见，让 Claude 修订方案（约 30 秒 – 2 分钟）..."
-        )
+        channel.send_text(msg.from_user_id,
+            voice_ack("收到补充意见，再改改方案", "refine_doing",
+                      user_msg=text, provider=provider))
         threading.Thread(
             target=self._run_claude_phase1,
             args=(msg, True),
@@ -901,9 +962,12 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
         if not ok:
             # phase-1 失败 → 直接清掉 pending，避免下次普通聊天被误判成 CONFIRM 复活
             self._claude_pending.pop(user_id, None)
+            # 失败原话照发（output 里有真错误信息），但口语化收尾、不要"已自动退出 Claude 模式"工程腔
+            self.channel.send_text(user_id, output)
             self.channel.send_text(
                 user_id,
-                output + "\n\n———\n（已自动退出 Claude 模式；想重试请重新发触发词）"
+                voice_ack("失败了，要不再发一次触发词重试", "fail",
+                          user_msg=text, provider=self._get_llm()),
             )
             return
 
@@ -913,12 +977,9 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
         if not refined:
             cur["request"] = text or cur.get("request", "")
 
-        header = "📋 可行性分析\n\n" if not refined else "📋 修订后的方案\n\n"
-        footer = (
-            "\n\n———\n"
-            "回复 '执行' 真改代码 / 自由补充意见继续修订 / '退出' 放弃"
-        )
-        self._send_chunked(user_id, header + output + footer)
+        # 12.1 · 不加 emoji 头、不加分隔线、不加"回复 '执行' / '退出'" 提示
+        # PHASE_1_PROMPT 已经要求 Claude 用口语自然语言；用户回什么由 LLM 三选一分类自动处理
+        self._send_chunked(user_id, output)
 
     def _run_claude_phase2(self, msg: IncomingMessage, pending_snapshot: dict):
         user_id = msg.from_user_id
@@ -953,11 +1014,13 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
             return
 
         if not ok:
-            # phase-2 失败 → 清掉 pending（同理：避免陈旧 pending 被下次消息误激活）
+            # phase-2 失败 → 清掉 pending
             self._claude_pending.pop(user_id, None)
+            self.channel.send_text(user_id, output)
             self.channel.send_text(
                 user_id,
-                output + "\n\n———\n（已自动退出 Claude 模式；如部分代码已改，请 git status 自查）"
+                voice_ack("失败了，可能部分代码已改，自己 git status 看一下",
+                          "fail", user_msg=confirmation, provider=self._get_llm()),
             )
             return
 
@@ -973,22 +1036,17 @@ AI_NEWS 是新闻分析工具，支持深度分析、看热度榜、看单国文
                 verify_ok, verify_section = verify_phase2.run_verify(verify_baseline)
             except Exception as e:
                 logger.exception(f"[wechat-dispatch] verify crashed: {e}")
-                verify_section = f"🔍 自动验证未运行（{type(e).__name__}: {str(e)[:60]}）"
+                # 静默：verify 自己挂了不打扰用户
 
         # 清掉 pending，发结果
         self._claude_pending.pop(user_id, None)
-        header = "✅ Claude 改完了" if verify_ok else "⚠️ Claude 改完但验证有警告"
-        name_suffix = (f"\n（分支 '{session_name}' 已更新；下次可用 '继续 {session_name}' 接续）"
-                       if session_name else "")
-        footer = "发 '重启' 让新代码生效" + (
-            "" if verify_ok else "（建议先按上方提示修复再重启）"
-        ) + name_suffix
-
-        body_parts = [header, "", output]
-        if verify_section:
-            body_parts.extend(["", verify_section])
-        body_parts.extend(["", "———", footer])
-        self._send_chunked(user_id, "\n".join(body_parts))
+        # 12.1 · 成功路径**不**加 emoji 头、**不**广播分支元数据、verify 通过时**沉默**
+        # PHASE_2_PROMPT 已经要求 Claude 用口语 1-2 句话告知用户改了啥 + 下一步
+        # 只有 verify 失败时才主动展示报告（保证用户能看到问题）
+        if not verify_ok and verify_section:
+            self._send_chunked(user_id, output + "\n\n" + verify_section)
+        else:
+            self._send_chunked(user_id, output)
 
     def _send_chunked(self, user_id: str, text: str, chunk: int = 1500):
         """微信单条消息过长会被截断；按行拆分，每段加 [i/n] 头。"""
