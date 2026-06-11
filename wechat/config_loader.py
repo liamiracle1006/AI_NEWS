@@ -100,8 +100,9 @@ def _load_json_safe(path: Path) -> dict:
 
 
 def load_unified_config(force_reload: bool = False) -> dict:
-    """加载并合并配置：BUILTIN_DEFAULTS ← config.example.json ← config.json。
+    """加载并合并配置：BUILTIN_DEFAULTS ← config.example.json ← config.json ← workspace/config.json。
 
+    13.3 · workspace 覆盖优先级最高。
     实例缓存，重复调用零成本。force_reload=True 重新读盘。
     """
     global _cached_config
@@ -115,13 +116,18 @@ def load_unified_config(force_reload: bool = False) -> dict:
     local = _load_json_safe(_CONFIG_PATH)
     if local:
         cfg = _deep_merge(cfg, local)
+    # 13.3 · workspace/config.json 覆盖（最高优先级）
+    try:
+        from . import workspace as _ws
+        ws_cfg_path = _ws.resolve("config.json")
+        if ws_cfg_path:
+            ws_data = _load_json_safe(ws_cfg_path)
+            if ws_data:
+                cfg = _deep_merge(cfg, ws_data)
+    except Exception as e:
+        logger.warning(f"[config] workspace overlay failed: {e}")
 
     _cached_config = cfg
-    logger.info(
-        f"[config] loaded: builtin defaults + "
-        f"{'example.json + ' if example else ''}"
-        f"{'config.json' if local else 'no local override'}"
-    )
     return cfg
 
 

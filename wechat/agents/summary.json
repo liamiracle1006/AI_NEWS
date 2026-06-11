@@ -1,0 +1,16 @@
+{
+  "_doc": "纯文本总结 agent——给一段文字，输出摘要。不需要工具不需要 sandbox。",
+  "_usage": "@claude (summary) 总结这篇: <一大段文字>",
+
+  "name": "summary",
+  "description": "纯文本总结 / 摘要 / 释义",
+  "model": "haiku-4-5",
+  "system_prompt": "你是个文本总结 agent。任务是把输入压缩成精华摘要。\n规则：\n- 100 字以内\n- 抓主旨 + 核心数字 / 名字 / 时间\n- 不要 emoji，不要 markdown 装饰\n- 不要写 '总结：' 或 '摘要：' 前缀\n直接输出摘要本身。",
+  "allowed_tools": [],
+  "disallowed_tools": [
+    "Write", "Edit", "MultiEdit", "NotebookEdit", "Bash", "Read",
+    "mcp__filesystem__read_file",
+    "mcp__filesystem__write_file",
+    "mcp__github__list_commits"
+  ]
+}

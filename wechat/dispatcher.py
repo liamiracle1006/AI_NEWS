@@ -22,7 +22,7 @@ from typing import Optional
 
 import requests
 
-from . import audit, claude_sessions, config_loader, events, routing_log, tools as wechat_tools, verify_phase2
+from . import agents, audit, claude_sessions, config_loader, events, routing_log, tools as wechat_tools, verify_phase2
 from .voice import voice_ack
 from .formatter import (
     format_analysis,
@@ -391,14 +391,21 @@ chat 的 reply **必须**：
         }
 
     def _load_persona_files(self):
-        """启动 / 重载人设时调。读 wechat/SOUL.md + wechat/AGENTS.md 缓存到 self._persona。"""
+        """启动 / 重载人设时调。先 workspace，再 wechat/ 兜底（13.3）。"""
+        from . import workspace as _ws
         wechat_dir = Path(__file__).resolve().parent
         for key, filename in [("soul", "SOUL.md"), ("agents", "AGENTS.md")]:
-            path = wechat_dir / filename
+            # 13.3 · workspace 优先
+            ws_path = _ws.resolve(filename)
+            path = ws_path or (wechat_dir / filename)
+            source = "workspace" if ws_path else "builtin"
             try:
                 if path.exists():
                     self._persona[key] = path.read_text(encoding="utf-8")
-                    logger.info(f"[wechat-dispatch] loaded {filename} ({len(self._persona[key])}B)")
+                    logger.info(
+                        f"[wechat-dispatch] loaded {filename} from {source} "
+                        f"({len(self._persona[key])}B)"
+                    )
                 else:
                     logger.warning(f"[wechat-dispatch] {filename} not found at {path}")
                     self._persona[key] = ""
@@ -485,6 +492,20 @@ chat 的 reply **必须**：
                 f"weak={sizes['weak']} cancel={sizes['cancel']} "
                 f"confirm={sizes['confirm']}"
             )
+            return
+
+        # 13.2 · 列出可用的 subagents
+        if text in ("列出 agents", "列出agents", "agents", "看 agents", "agent 列表"):
+            ag_list = agents.list_agents()
+            if not ag_list:
+                channel.send_text(msg.from_user_id, "还没注册 agent。")
+                return
+            lines = [f"已注册 {len(ag_list)} 个 agent："]
+            for a in ag_list:
+                model = a.model or "default"
+                lines.append(f"  ({a.name}) [{model}] {a.description}")
+            lines.append("\n用法：@claude (research) 你的问题")
+            channel.send_text(msg.from_user_id, "\n".join(lines))
             return
 
         # 12.3 · 重载人设（不重启加载新 SOUL/AGENTS）
@@ -989,6 +1010,12 @@ chat 的 reply **必须**：
             channel.send_text(msg.from_user_id, "🛑 Claude Code 仅授权账号可用。")
             return True
 
+        # 13.2 · 解析 (agent_name) 选 subagent；没声明就用 'code' 默认
+        agent_name, cleaned_text = agents.parse_agent_from_trigger(text)
+        if agent_name:
+            text = cleaned_text  # 后续 phase-1 prompt 用清理后的文本
+        agent_name = agent_name or "code"
+
         # P1.5 · 解析 "起名 X" / "命名为 X" / "叫 X" → 创建命名持久化 session
         session_name: Optional[str] = None
         name_match = NAMING_HINT_RE.search(text)
@@ -1019,6 +1046,7 @@ chat 的 reply **必须**：
             "session_id": session_id,
             "session_name": session_name,  # 命名 session → str；匿名 → None
             "is_first_call": True,  # 决定首次用 --session-id 还是后续用 --resume
+            "agent_name": agent_name,  # 13.2 · 该工作流用哪个 agent
         }
         # 12.1 · voice_ack 代替工程师文档腔；命名分支信息**不**主动广播
         ack = voice_ack("看这个改代码需求，先想想方案", "ack",
@@ -1120,7 +1148,8 @@ chat 的 reply **必须**：
     def _run_claude_subprocess(self, prompt: str, timeout: int,
                                allow_edits: bool = False,
                                session_id: Optional[str] = None,
-                               resume_session_id: Optional[str] = None) -> tuple[bool, str]:
+                               resume_session_id: Optional[str] = None,
+                               agent: Optional["agents.Agent"] = None) -> tuple[bool, str]:
         """订阅模式跑 `claude --print`。返回 (success, output_or_error)。
 
         allow_edits=True 时传 `--permission-mode acceptEdits`，让 Claude 真的能改文件
@@ -1163,8 +1192,9 @@ chat 的 reply **必须**：
         # 模式下也用 --disallowedTools 把写操作硬拦截。phase-2 (allow_edits=True)
         # 完全放开。这是 belt-and-suspenders：prompt 说"严禁修改"是软约束，
         # disallowedTools 是 CLI 层硬约束。
+        disallowed_list = []
         if not allow_edits:
-            disallowed = " ".join([
+            disallowed_list = [
                 "Write", "Edit", "MultiEdit", "NotebookEdit",
                 "mcp__filesystem__write_file",
                 "mcp__filesystem__edit_file",
@@ -1178,8 +1208,21 @@ chat 的 reply **必须**：
                 "mcp__github__create_branch",
                 "mcp__github__push_files",
                 "mcp__github__add_issue_comment",
-            ])
-            argv += ["--disallowedTools", disallowed]
+            ]
+
+        # 13.2 · agent 配置叠加（model + 额外 disallowed + allowed_tools）
+        if agent:
+            if agent.model:
+                argv += ["--model", agent.model]
+            # agent.disallowed_tools 合并去重
+            for tool in agent.disallowed_tools:
+                if tool not in disallowed_list:
+                    disallowed_list.append(tool)
+            if agent.allowed_tools:
+                argv += ["--allowedTools", " ".join(agent.allowed_tools)]
+
+        if disallowed_list:
+            argv += ["--disallowedTools", " ".join(disallowed_list)]
 
         # session 控制（P1.5）：resume 优先于 session-id
         if resume_session_id:
@@ -1251,20 +1294,24 @@ chat 的 reply **必须**：
         else:
             current_block = text
 
-        # 12.3 · 在 PHASE_1_PROMPT 前注入 SOUL + AGENTS + 现有 tools 摘要
-        prompt = self._persona_prefix(include_skills=True) + PHASE_1_PROMPT.format(
+        # 13.2 · 取出 agent（决定 model / disallowed_tools / system_prompt 叠加）
+        cur_before = self._claude_pending.get(user_id, {})
+        agent = agents.get(cur_before.get("agent_name", "code")) or agents.get_default()
+
+        # 12.3 · 在 PHASE_1_PROMPT 前注入 SOUL + AGENTS + 现有 tools 摘要 + agent 的 system_prompt
+        agent_prefix = (agent.system_prompt + "\n\n") if agent.system_prompt else ""
+        prompt = self._persona_prefix(include_skills=True) + agent_prefix + PHASE_1_PROMPT.format(
             recent_msgs=recent_lines,
             current_request=current_block,
         )
 
         # session 控制（P1.5）：首次用 --session-id 起；refinement 用 --resume 接续
-        cur_before = self._claude_pending.get(user_id, {})
         sid = cur_before.get("session_id")
         is_first = cur_before.get("is_first_call", True)
         if is_first:
-            ok, output = self._run_claude_subprocess(prompt, timeout=600, session_id=sid)
+            ok, output = self._run_claude_subprocess(prompt, timeout=600, session_id=sid, agent=agent)
         else:
-            ok, output = self._run_claude_subprocess(prompt, timeout=600, resume_session_id=sid)
+            ok, output = self._run_claude_subprocess(prompt, timeout=600, resume_session_id=sid, agent=agent)
 
         # 跑完后回查 pending，看是否在过程中被取消
         cur = self._claude_pending.get(user_id)
@@ -1313,8 +1360,12 @@ chat 的 reply **必须**：
             logger.warning(f"[wechat-dispatch] verify baseline snapshot failed: {e}")
             verify_baseline = None
 
+        # 13.2 · 取出 agent
+        agent = agents.get(pending_snapshot.get("agent_name", "code")) or agents.get_default()
+
         # 12.3 · 在 PHASE_2_PROMPT 前注入 SOUL + AGENTS（不需要 skills 摘要，phase-2 只动方案）
-        prompt = self._persona_prefix(include_skills=False) + PHASE_2_PROMPT.format(
+        agent_prefix = (agent.system_prompt + "\n\n") if agent.system_prompt else ""
+        prompt = self._persona_prefix(include_skills=False) + agent_prefix + PHASE_2_PROMPT.format(
             user_id=user_id,
             proposal=proposal,
             original_request=original_request,
@@ -1323,7 +1374,7 @@ chat 的 reply **必须**：
 
         # phase-2 一定是 --resume（session 已在 phase-1 起好）
         ok, output = self._run_claude_subprocess(
-            prompt, timeout=1800, allow_edits=True, resume_session_id=sid,
+            prompt, timeout=1800, allow_edits=True, resume_session_id=sid, agent=agent,
         )
 
         cur = self._claude_pending.get(user_id)

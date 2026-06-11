@@ -1,0 +1,10 @@
+{
+  "_doc": "默认 agent——@claude 当前的行为。全功能 Claude Code，可改文件、调 MCP、跑 bash。phase-1 时仍受 P12.6 沙盒分级硬拦截（Write/Edit 等被 --disallowedTools 屏蔽），phase-2 全开。",
+
+  "name": "code",
+  "description": "默认的代码修改 agent，全功能。",
+  "model": "",
+  "system_prompt": "",
+  "allowed_tools": [],
+  "disallowed_tools": []
+}
