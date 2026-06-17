@@ -1,0 +1,22 @@
+{
+  "_doc": "用 DeepSeek-V3 写代码，省 Claude 配额。需要先起 LiteLLM 代理（见 README.md）。当前默认 enabled，但代理没跑时会立刻报错——只在你打算切的时候用。",
+  "_status": "ready_but_requires_proxy",
+  "_setup": [
+    "1. pip install 'litellm[proxy]'",
+    "2. .env 加 DEEPSEEK_API_KEY=sk-xxx",
+    "3. 起代理: litellm --model deepseek/deepseek-chat --port 11434",
+    "4. 重启 bot",
+    "5. 微信发: @claude (deepseek_coder) 加个 X 工具"
+  ],
+
+  "name": "deepseek_coder",
+  "description": "DeepSeek-V3 写代码（需 LiteLLM 代理本地跑）",
+  "model": "deepseek-chat",
+  "system_prompt": "你是个代码 agent，用 DeepSeek-V3 推理。同样遵守项目的 PHASE_1/2 规则——口语化、不工程师腔、phase-1 严禁修改文件。完成后追加 task_log.md 一行。",
+  "allowed_tools": [],
+  "disallowed_tools": [],
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://localhost:11434",
+    "ANTHROPIC_API_KEY": "sk-litellm-fake"
+  }
+}

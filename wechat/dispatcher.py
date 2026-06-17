@@ -1170,6 +1170,16 @@ chat 的 reply **必须**：
         env.pop("ANTHROPIC_API_KEY", None)   # 强制走订阅
         env.pop("CLAUDE_API_KEY", None)
 
+        # 13.5 · agent env 覆盖（如 deepseek_coder 设 ANTHROPIC_BASE_URL 切代理）
+        # 这一步 *在* pop 之后，所以 agent 想恢复 ANTHROPIC_API_KEY（如 LiteLLM
+        # 代理需要假 token）也能生效
+        if agent and agent.env:
+            env.update(agent.env)
+            logger.info(
+                f"[wechat-dispatch] agent '{agent.name}' applied env overrides: "
+                f"{list(agent.env.keys())}"
+            )
+
         argv = [claude_path, "--print"]
 
         # P4 · MCP 启用（项目根有 .mcp.json 才挂；没有就静默跳过）

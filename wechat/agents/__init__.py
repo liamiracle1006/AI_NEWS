@@ -38,6 +38,8 @@ class Agent:
     system_prompt: str = ""  # 追加到 PHASE_*_PROMPT 前
     allowed_tools: list[str] = field(default_factory=list)
     disallowed_tools: list[str] = field(default_factory=list)
+    # 13.5 · 子进程 env 覆盖（如 deepseek_coder 用 ANTHROPIC_BASE_URL 切代理）
+    env: dict[str, str] = field(default_factory=dict)
 
 
 _REGISTRY: dict[str, Agent] = {}
@@ -74,6 +76,7 @@ def _load_agents_in_dir(agents_dir: Path, source_label: str):
                 system_prompt=data.get("system_prompt", ""),
                 allowed_tools=list(data.get("allowed_tools", [])),
                 disallowed_tools=list(data.get("disallowed_tools", [])),
+                env=dict(data.get("env", {})),
             )
         except Exception as e:
             logger.warning(f"[agents] {f.name} schema mismatch: {e}")
